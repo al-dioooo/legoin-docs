@@ -32,3 +32,4 @@ Don't change the content of an `Accepted` ADR. To change a decision, write a new
 
 | No | Title | Status | Date |
 | --- | --- | --- | --- |
+| [0001](0001-web-tech-stack.md) | Web frontend tech stack | Accepted | 2026-10-28 |

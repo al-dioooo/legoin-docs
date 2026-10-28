@@ -33,4 +33,5 @@ Don't change the content of an `Accepted` ADR. To change a decision, write a new
 | No | Title | Status | Date |
 | --- | --- | --- | --- |
 | [0001](0001-web-tech-stack.md) | Web frontend tech stack | Accepted | 2026-10-28 |
-| [0002](0002-visual-direction.md) | Instruction-booklet style with LEGO red and yellow | Accepted | 2026-10-28 |
+| [0002](0002-visual-direction.md) | Instruction-booklet style with LEGO red and yellow | Superseded by 0003 | 2026-10-28 |
+| [0003](0003-ballers-style-lego-colors.md) | Ballers-addict style in LEGO colors, Dela Gothic One and the name Legoin | Accepted | 2026-10-28 |

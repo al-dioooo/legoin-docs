@@ -1,6 +1,6 @@
 # legoin-docs
 
-Documentation for Legoin: team guidelines and the decision log. Code lives in [legoin-web](https://github.com/al-dioooo/legoin-web).
+Documentation for Legoin: team guidelines and the decision log. Code lives in [legoin-web](https://github.com/al-dioooo/legoin-web) (the web app) and [legoin-ml](https://github.com/al-dioooo/legoin-ml) (the models).
 
 | Folder | Contents |
 | --- | --- |

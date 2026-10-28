@@ -1,6 +1,6 @@
 # ADR-0002: Instruction-Booklet Style with LEGO Red and Yellow
 
-- Status: Accepted
+- Status: Superseded by [ADR-0003](0003-ballers-style-lego-colors.md)
 - Date: 2026-10-28
 - Deciders: Legoin team
 

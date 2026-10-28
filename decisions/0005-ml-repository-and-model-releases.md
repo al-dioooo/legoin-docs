@@ -1,6 +1,6 @@
 # ADR-0005: Models in legoin-ml, Weights as GitHub Releases
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-28
 - Deciders: Legoin team
 - Issue: #8

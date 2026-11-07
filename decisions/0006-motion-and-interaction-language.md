@@ -1,6 +1,6 @@
 # ADR-0006: Motion and Interaction Language: an Instruction Booklet on a Baseplate, Built on CSS and View Transitions
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Deciders: Legoin team
 - Issue: #10

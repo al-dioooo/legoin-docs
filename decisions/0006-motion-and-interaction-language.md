@@ -75,7 +75,7 @@ The rest of the page only fades. The capture flow hands the scan it just receive
 
 **Pointer and touch.**
 
-- With a mouse, studs near the pointer light up: a mask moved once per animation frame.
+- With a mouse, studs near the pointer light up: a lens ten studs across, moved by transform once per animation frame.
 - At most one primary button per screen is magnetic; today that's "Scan pieces".
 - On phones, selecting a piece and undoing a removal give an 8ms vibration where supported.
 - Touch screens and reduced motion get neither the glow nor the magnet.
@@ -98,7 +98,7 @@ The rest of the page only fades. The capture flow hands the scan it just receive
 - Positive: timings live in one place, so tuning the feel is a token change, and reduced motion is a token override rather than per-component code.
 - Negative: the photo only morphs when the results render in the same commit as the navigation. A `loading.tsx` or a slow fetch on that route turns the morph into a plain fade. The scan handoff exists for this reason, and it must not outlive the API's own copy of the scan.
 - Negative: CSS can't animate an element after React removes it. Exits keep the element for the exit duration (a `leaving` state plus a short wait), where a library would offer `AnimatePresence`.
-- Negative: the pointer glow repaints a masked layer on each frame the mouse moves. It's limited to desktop pointers and to bare baseplate, but it isn't compositor-only.
+- Negative: the pointer glow's lens redraws its own small stud pattern (ten studs square) on each frame the mouse moves, to stay aligned with the grid. The move itself is a transform, and it's limited to desktop pointers and bare baseplate, but it isn't purely compositor work.
 - Negative: the stud grid is the "Papan dasar" pattern that [ADR-0002](0002-visual-direction.md) passed over as busy next to photos. To keep that risk in check:
   - the rings are 9% ink;
   - opaque plates cover the grid wherever content sits;

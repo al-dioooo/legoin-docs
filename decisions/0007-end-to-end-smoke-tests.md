@@ -1,6 +1,6 @@
 # ADR-0007: End-to-End Smoke Tests with Playwright, on Chromium, against a Production Build
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-08
 - Deciders: Legoin team
 - Issue: #12

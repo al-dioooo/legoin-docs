@@ -38,4 +38,4 @@ Don't change the content of an `Accepted` ADR. To change a decision, write a new
 | [0004](0004-english-default-with-indonesian.md) | English by default, Indonesian as a second language | Accepted | 2026-10-28 |
 | [0005](0005-ml-repository-and-model-releases.md) | Models in legoin-ml, weights as GitHub Releases | Accepted | 2026-10-28 |
 | [0006](0006-motion-and-interaction-language.md) | Motion and interaction language: an instruction booklet on a baseplate | Accepted | 2026-11-07 |
-| [0007](0007-end-to-end-smoke-tests.md) | End-to-end smoke tests with Playwright, on Chromium, against a production build | Proposed | 2026-11-08 |
+| [0007](0007-end-to-end-smoke-tests.md) | End-to-end smoke tests with Playwright, on Chromium, against a production build | Accepted | 2026-11-08 |

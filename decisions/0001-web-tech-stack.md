@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-28
 - Deciders: Legoin team
+- Amended by: [ADR-0007](0007-end-to-end-smoke-tests.md), which adds Playwright for end-to-end smoke tests
 
 ## Context and Problem
 

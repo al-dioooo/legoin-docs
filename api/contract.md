@@ -658,3 +658,71 @@ The PRD's `cek_inventori` check splits what a build needs into parts the person 
 - It's measured on the backend: from the end of the upload until the scan job is `done`, plus the time to answer the request for ideas. The time the person spends checking their pieces in between, and the phone's own network time, don't count.
 - Budget: about 5 seconds for the scan and 10 for the ideas. The [deadlines](#timeouts) are where a call fails, not the target.
 
+## 8. What stays out of the contract
+
+**Demo options.** `?mock=fail-<reason>` and `?mockDelay=<ms>` are read from the page's URL by legoin-web's `src/lib/api/mock-backend.ts`. They're client-side only: they never reach the API, and the API has no way to fake a failure or a delay. The end-to-end suite keeps using them against the mock ([ADR-0007](../decisions/0007-end-to-end-smoke-tests.md)).
+
+**Only in the mock:**
+
+- the four demo scans every new visitor starts with, and `resetMockData`;
+- the made-up detections for a photo it doesn't know (`detectionsForPhoto`);
+- the idea templates and their order: once unseen ideas run out, the mock offers the ones shown longest ago again, while the backend simply avoids `exclude`;
+- the fake waits: 900 ms per stage, 1200 ms for ideas and 150 ms for reads and saves;
+- the `localStorage` key `legoin.mock.scans.v1`.
+
+**Client-side, with the real API too:**
+
+- `inOrder`, which passes each stage on once;
+- the scan handoff (`src/lib/scan-handoff.ts`), which shows a new scan's results in the same frame as the navigation;
+- reading, downscaling and checking photos (`src/lib/photo.ts`); the backend checks the type and size again;
+- everything about display: color names, the low-confidence flag and number formats. The API sends ids and plain numbers.
+
+**Where the mock and the contract differ:**
+
+- The mock's `photo.src` is a data URL or a path on the web app. The API's is a URL the backend serves.
+- The mock writes ideas for a scan with no pieces, every part missing. The API answers `409 no_pieces`.
+- For a scan that's gone, the mock's `updateDetections` and `getIdeas` reject with a plain `Error`. The API answers `404 not_found`; the screens treat both as a failure.
+- The mock never times out. The API can answer `timeout`, which `ScanFailure` doesn't have yet.
+
+## 9. Open questions
+
+For the team. The contract works with any answer; the placeholders below only keep it complete until then.
+
+1. **The LLM provider.** The contract doesn't depend on one. Whatever is chosen needs tool calling for `cek_inventori`, good Indonesian, and an answer within the 10-second budget.
+2. **Accounts and auth.** Is there a log-in? Placeholder: the `Legoin-Device-Id` header, a random UUID the browser makes once and keeps in `localStorage`. It keeps each device's scans apart, but it isn't security: anyone who has the id sees its scans. If accounts come, real auth replaces the header.
+3. **Where photos are stored, for how long, and what else they're used for.** The contract only needs `photo.src` to load in a plain `<img>` while the scan exists, and deleting a scan to delete its photo. If photos are private, `src` has to be an unguessable or signed URL, since an `<img>` sends no device header.
+4. **Whether history stays per device.** Today it's per browser: the mock keeps scans in `localStorage`, and the results screen says a missing scan "may have been deleted from this browser". The placeholder in 2 keeps that. History across devices needs accounts.
+
+For the backend and ML owners:
+
+5. **The photo size the models need.** The web app uploads its 1200 px copy. If part classification needs more pixels, the web app can send a larger one within 10 MB.
+6. **Pieces outside the catalogue.** When the detector finds a piece the classifier can't place among the 13 parts and 10 colors, does the backend drop it, or send its nearest guess with a low confidence so the person is asked to check it?
+
+## 10. Decisions in this draft
+
+Technical choices this draft makes so the contract is complete. Each can be changed in review.
+
+1. **Stages reach the client by polling a scan job, not by server-sent events.** Polling holds up on unsteady phone connections: a lost poll is retried and the scan carries on, where a dropped stream would lose it. It's plain JSON that the backend can serve without streaming and that `curl` can test, and the data layer's `inOrder` was written for a backend that polls. The cost is 20 to 30 small requests per scan, and a stage shown up to 500 ms late. The alternative is one `POST` that streams `stage` events and is cancelled by closing it.
+2. **The scan job is a resource of its own.** `Scan` stays exactly as in `domain.ts`, with no status field, and a failed or cancelled scan never reaches history, as with the mock.
+3. **Cancelling also deletes a scan that has just finished,** so a cancel always means nothing is saved.
+4. **Ideas answer in one request,** since the agent's 10 seconds fit in an ordinary request and `getIdeas` has no stages to show.
+5. **The app's part and color ids go on the wire, not Rebrickable ids,** because the code uses them everywhere. The catalogue maps each one to its Rebrickable or design id.
+6. **The version is in the base URL (`/v1`), keys are camelCase, and optional fields are left out rather than `null`,** so answers parse straight into the types in `domain.ts`.
+7. **Errors share one body with a `code`.** `network` stays the client's own reason, and `timeout`, `unavailable` and `internal` are new codes.
+8. **Deletes always succeed:** `DELETE` answers `204` for a scan or job that's already gone, as the mock does.
+9. **Corrections are all or nothing, and unknown detection ids are ignored,** as in the mock, so a retry or an undo is safe.
+10. **`GET /scans` is wrapped (`{ "scans": [] }`) and has no paging,** since one device's history is small, and the wrapper lets paging come later without a new version.
+11. **Ideas for a scan with no pieces answer `409 no_pieces`** instead of ideas with every part missing.
+12. **The backend runs `cek_inventori` itself on the final parts list,** so the guarantee doesn't depend on the model calling the tool correctly.
+13. **Times:** the 15-second target applies to photos of up to 32 pieces, with a budget of about 5 seconds for the scan and 10 for ideas; jobs and requests for ideas fail at 30 seconds; the client gives up at 45 seconds for a scan and 40 for ideas, and polls every 500 ms.
+14. **Limits:** an `add` change adds 1 to 20 pieces, like the web app's add-piece form (`MAX_ADD_QUANTITY`), and `exclude` holds at most 50 ids.
+
+## 11. Changes from issue #7
+
+The mock has grown since the issue was written, and the contract follows the code:
+
+- Scanning is `POST /scan-jobs` and a job to poll (decisions 1 and 2), not `POST /scans` returning a scan id and status.
+- Color ids are the app's ids, with Rebrickable ids in the catalogue (decision 5).
+- The issue's `InventoryLine` is `PartCount`, and the inventory isn't sent: it's derived from the detections.
+- New since the issue: the `restore` change for undo, `exclude` for "Try other ideas", the latest set kept on the scan with `lastTheme`, and `GET /scans/{scanId}/ideas/{ideaId}`.
+- The issue lists `timeout` as a failure. The contract has it as an error code; legoin-web's `ScanFailure` doesn't have it yet, so the client reports it as `network` for now.

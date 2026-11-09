@@ -172,3 +172,272 @@ The catalogue is the PRD's MVP: 10 colors and 13 parts. The backend only ever se
 | `slope-2x2` | Slope 45° 2×2 | 3039 |
 | `tile-1x2` | Tile 1×2 | 3069b |
 | `round-1x1` | Round 1×1 | 3062b |
+
+## 4. Scans
+
+### Scanning a photo
+
+`createScan(photo, { onStage, signal })` uploads a photo, reports the pipeline's stages as they happen, and resolves with the saved scan. Over HTTP that's a scan job the client polls:
+
+1. `POST /scan-jobs` uploads the photo and answers `202` with a running job.
+2. The client asks `GET /scan-jobs/{jobId}` every 500 ms and passes each job's `stage` to `onStage`. The data layer's `inOrder` already drops repeats and steps back, and a stage that changed between two polls is skipped.
+3. When the job is `done`, `createScan` resolves with its `scan`. When it's `failed`, `createScan` rejects with an `ApiError` whose reason comes from the job's error (see [the mapping](#scanfailure-reasons)).
+
+**Cancelling.** When `signal` aborts, the client stops polling and rejects with an `AbortError` straight away. It also sends `DELETE /scan-jobs/{jobId}` without waiting for the answer (`fetch` with `keepalive`). The backend saves nothing for a cancelled job. If the upload itself is aborted before the `202` arrives, the client has no job id to cancel, so a job the backend already accepted finishes and its scan shows up in history. This draft accepts that rare case.
+
+**Giving up.** A job that's still running 30 seconds after the upload ends `failed` with `timeout`. The client gives up after 45 seconds with no ending, or after 3 polls in a row that get no answer: it sends the `DELETE` and rejects with the reason `network`. One failed poll on its own is just retried.
+
+#### `POST /scan-jobs`
+
+Uploads one photo as `multipart/form-data`, in a part named `photo`:
+
+- JPEG, PNG or WebP;
+- at most 10 MB (10 × 1024 × 1024 bytes, `MAX_PHOTO_BYTES` in legoin-web's `src/lib/photo.ts`).
+
+The web app sends the JPEG copy it shows on screen, with its longest side at most 1200 px (`readPhoto`). The backend checks the type and size again, since a client check is only a courtesy.
+
+```http
+POST /v1/scan-jobs HTTP/1.1
+Host: api.legoin.example
+Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Content-Type: multipart/form-data; boundary=legoin
+
+--legoin
+Content-Disposition: form-data; name="photo"; filename="photo.jpg"
+Content-Type: image/jpeg
+
+<JPEG bytes>
+--legoin--
+```
+
+```http
+HTTP/1.1 202 Accepted
+Content-Type: application/json
+
+{ "id": "job_8c1f2e", "status": "running", "stage": "detecting" }
+```
+
+Errors: `400 invalid_request` when there's no `photo` part, `413 photo_too_large`, `415 photo_type`. Problems the models find in the photo (`no_pieces`, `too_dark`, `too_blurry`) don't answer the upload; they end the job.
+
+#### `GET /scan-jobs/{jobId}`
+
+The job as it is now. A running job reports its stage:
+
+```http
+GET /v1/scan-jobs/job_8c1f2e HTTP/1.1
+Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+```
+
+```json
+{ "id": "job_8c1f2e", "status": "running", "stage": "classifying" }
+```
+
+A finished job carries the saved scan, which `GET /scans/{scanId}` and `GET /scans` now return too:
+
+```json
+{
+  "id": "job_8c1f2e",
+  "status": "done",
+  "scan": {
+    "id": "scn_4kd2p9",
+    "createdAt": "2026-11-09T03:12:45.120Z",
+    "photo": {
+      "src": "https://photos.legoin.example/scn_4kd2p9.jpg",
+      "width": 1200,
+      "height": 800
+    },
+    "detections": [
+      {
+        "id": "det_a1",
+        "part": "brick-2x4",
+        "color": "red",
+        "box": { "x": 0.075, "y": 0.165, "width": 0.278, "height": 0.245 },
+        "confidence": 0.94
+      },
+      {
+        "id": "det_a2",
+        "part": "slope-2x2",
+        "color": "green",
+        "box": { "x": 0.405, "y": 0.54, "width": 0.18, "height": 0.235 },
+        "confidence": 0.82
+      },
+      {
+        "id": "det_a3",
+        "part": "brick-2x2",
+        "color": "dark-gray",
+        "box": { "x": 0.727, "y": 0.54, "width": 0.172, "height": 0.262 },
+        "confidence": 0.58
+      }
+    ]
+  }
+}
+```
+
+A failed job carries the error, and nothing was saved:
+
+```json
+{
+  "id": "job_8c1f2e",
+  "status": "failed",
+  "error": { "code": "too_dark", "message": "The photo is too dark to find pieces." }
+}
+```
+
+Rules:
+
+- The stage only moves forward: `detecting`, `classifying`, `coloring`. A job that's waiting in a queue reports `detecting`.
+- A job ends `done` or `failed` and never changes after that. The backend keeps an ended job for at least 10 minutes, then may answer `404`.
+- The poll itself worked, so a failed job still answers `200`. Only an unknown job is an HTTP error: `404 not_found`.
+
+#### `DELETE /scan-jobs/{jobId}`
+
+Cancels the job and answers `204` with no body. The backend stops at the next stage and saves nothing. If the job had already finished, it deletes the scan the job saved, so a cancelled scan never shows up in history. An unknown or forgotten job also answers `204`, so the client can send it without checking first.
+
+```http
+DELETE /v1/scan-jobs/job_8c1f2e HTTP/1.1
+Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+```
+
+```http
+HTTP/1.1 204 No Content
+```
+
+### `GET /scans/{scanId}`
+
+`getScan(id)`: one scan, with its detections and, once ideas were asked for, its `lastTheme` and latest `ideas`. The answer is the `scan` from the finished job above, as it is now. An unknown scan, or one from another device, answers `404 not_found`, and the client returns `null`.
+
+```http
+GET /v1/scans/scn_4kd2p9 HTTP/1.1
+Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+```
+
+```http
+HTTP/1.1 404 Not Found
+Content-Type: application/json
+
+{ "error": { "code": "not_found", "message": "No scan scn_4kd2p9." } }
+```
+
+### `GET /scans`
+
+`listScans()`: this device's scans, newest first by `createdAt`, as full `Scan` objects. They're wrapped in an object so paging can be added later without a new version; this version has no paging. No scans answers `{ "scans": [] }`.
+
+```http
+GET /v1/scans HTTP/1.1
+Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+```
+
+```jsonc
+{
+  "scans": [
+    {
+      "id": "scn_4kd2p9",
+      "createdAt": "2026-11-09T03:12:45.120Z",
+      "photo": { "src": "https://photos.legoin.example/scn_4kd2p9.jpg", "width": 1200, "height": 800 },
+      "detections": [/* the three detections above */]
+    },
+    {
+      "id": "scn_9tq1m3",
+      "createdAt": "2026-11-08T11:20:00.000Z",
+      "photo": { "src": "https://photos.legoin.example/scn_9tq1m3.jpg", "width": 900, "height": 1200 },
+      "detections": [
+        {
+          "id": "det_k7",
+          "part": "brick-2x4",
+          "color": "blue",
+          "box": { "x": 0.271, "y": 0.361, "width": 0.47, "height": 0.286 },
+          "confidence": 0.96
+        }
+      ]
+    }
+  ]
+}
+```
+
+### `PATCH /scans/{scanId}/detections`
+
+`updateDetections(id, changes)`: applies the person's corrections and answers `200` with the updated scan. The body is `{ "changes": DetectionChange[] }`, with at least one change.
+
+| Change | Fields | What it does |
+| --- | --- | --- |
+| `edit` | `id`, and `part` or `color` or both, or neither | Sets the part and color given, and marks the piece `edited`. Sending the piece's own part and color, or neither, confirms a flagged piece. |
+| `remove` | `id` | Removes the piece. |
+| `add` | `part`, `color`, `quantity` from 1 to 20 | Adds `quantity` pieces the detector missed, one detection each, with a new id, `box: null`, `confidence: null` and `edited: true`. |
+| `restore` | `detection`, whole | Puts the piece back exactly as given, id, box and confidence included: it replaces the piece with that id, or is added if there's none. The web app uses it for undo. |
+
+Rules:
+
+- **In order, all or nothing.** Changes apply in the order sent. If one is invalid, such as an unknown part or color id or a quantity of 0, the answer is `400 invalid_request` with the change's path in `field`, and nothing changes.
+- **Unknown ids are ignored.** An `edit` or `remove` for an id the scan doesn't have changes nothing, so a retried request or an undo is safe to send twice.
+- **Ideas follow the inventory.** The backend compares the inventory before and after. If it changed, the scan's `ideas` are dropped, because they were checked against the pieces as they were, and the next request for ideas checks the corrected ones. If it's the same, as when a flagged piece is confirmed, the `ideas` stay. Either way `lastTheme` stays.
+
+This request recolors the flagged piece and adds a blue plate the detector missed. The scan had ideas, and the inventory changed, so they're gone; `lastTheme` is still there:
+
+```http
+PATCH /v1/scans/scn_4kd2p9/detections HTTP/1.1
+Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Content-Type: application/json
+
+{
+  "changes": [
+    { "type": "edit", "id": "det_a3", "color": "black" },
+    { "type": "add", "part": "plate-1x2", "color": "blue", "quantity": 1 }
+  ]
+}
+```
+
+```json
+{
+  "id": "scn_4kd2p9",
+  "createdAt": "2026-11-09T03:12:45.120Z",
+  "photo": { "src": "https://photos.legoin.example/scn_4kd2p9.jpg", "width": 1200, "height": 800 },
+  "detections": [
+    {
+      "id": "det_a1",
+      "part": "brick-2x4",
+      "color": "red",
+      "box": { "x": 0.075, "y": 0.165, "width": 0.278, "height": 0.245 },
+      "confidence": 0.94
+    },
+    {
+      "id": "det_a2",
+      "part": "slope-2x2",
+      "color": "green",
+      "box": { "x": 0.405, "y": 0.54, "width": 0.18, "height": 0.235 },
+      "confidence": 0.82
+    },
+    {
+      "id": "det_a3",
+      "part": "brick-2x2",
+      "color": "black",
+      "box": { "x": 0.727, "y": 0.54, "width": 0.172, "height": 0.262 },
+      "confidence": 0.58,
+      "edited": true
+    },
+    {
+      "id": "det_b7",
+      "part": "plate-1x2",
+      "color": "blue",
+      "box": null,
+      "confidence": null,
+      "edited": true
+    }
+  ],
+  "lastTheme": "vehicles"
+}
+```
+
+Errors: `400 invalid_request`, `404 not_found`.
+
+### `DELETE /scans/{scanId}`
+
+`deleteScan(id)`: deletes the scan with its photo and ideas, and answers `204` with no body. An unknown scan also answers `204`, so deleting twice, or deleting every scan at once from history, never fails on one that's already gone.
+
+```http
+DELETE /v1/scans/scn_4kd2p9 HTTP/1.1
+Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+```
+
+```http
+HTTP/1.1 204 No Content
+```

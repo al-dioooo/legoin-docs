@@ -441,3 +441,134 @@ Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
 ```http
 HTTP/1.1 204 No Content
 ```
+
+## 5. Ideas
+
+### `POST /scans/{scanId}/ideas`
+
+`getIdeas(scanId, theme, locale, { exclude })`: asks the agent for three new ideas and answers `200` with the `IdeaSet`. The data layer resolves with its `items`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `theme` | `Theme` | The theme asked for. |
+| `locale` | `Locale` | The language to write the ideas in: the page's language. |
+| `exclude` | `string[]`, optional | For "Try other ideas": the ids of ideas already shown for this scan, oldest first. At most 50. |
+
+What the backend does:
+
+- **Writes three ideas** in `locale`, each checked against the scan's inventory as it is now (see [Rules](#7-rules)). For `surprise`, it's one idea from each of `vehicles`, `animals` and `buildings`.
+- **Keeps them.** The set becomes the scan's `ideas`, replacing the one before, and `theme` becomes its `lastTheme`.
+- **Avoids excluded ideas.** The backend remembers every idea it has written for a scan, not only the latest set, so it can tell the agent what was already shown. Ids it doesn't know are ignored.
+- **Asks again every time.** Every call is a wait and gives different ideas. To show the kept ones, read `ideas` from `GET /scans/{scanId}` instead.
+
+A request that fails changes nothing: the scan keeps its earlier `ideas` and `lastTheme`. When two requests for one scan overlap, the one that finishes last is the set that's kept.
+
+Idea ids are unique within a scan and never reused for a different idea, so an old link to an idea that has since been replaced answers `404` rather than showing another idea.
+
+```http
+POST /v1/scans/scn_4kd2p9/ideas HTTP/1.1
+Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Content-Type: application/json
+
+{ "theme": "vehicles", "locale": "id", "exclude": ["idea_m2x9", "idea_p0d4", "idea_t6w1"] }
+```
+
+```json
+{
+  "theme": "vehicles",
+  "locale": "id",
+  "items": [
+    {
+      "id": "idea_r4c8",
+      "theme": "vehicles",
+      "difficulty": "easy",
+      "title": "Mobil balap kecil",
+      "summary": "Badan merah, kap hijau, lampu kuning.",
+      "steps": [
+        "Pasang brick 2×4 merah di atas plate 2×4 hitam sebagai badan.",
+        "Taruh slope 2×2 hijau di depan sebagai kap mesin.",
+        "Tambahkan brick 2×2 hitam di belakang dan dua round 1×1 kuning sebagai lampu."
+      ],
+      "used": [
+        { "part": "brick-2x2", "color": "black", "quantity": 1 },
+        { "part": "brick-2x4", "color": "red", "quantity": 1 },
+        { "part": "slope-2x2", "color": "green", "quantity": 1 }
+      ],
+      "missing": [
+        { "part": "round-1x1", "color": "yellow", "quantity": 2 },
+        { "part": "plate-2x4", "color": "black", "quantity": 1 }
+      ]
+    },
+    {
+      "id": "idea_l8k3",
+      "theme": "vehicles",
+      "difficulty": "medium",
+      "title": "Lokomotif",
+      "summary": "Lokomotif merah dengan cerobong hitam.",
+      "steps": [
+        "Letakkan brick 2×4 merah sebagai badan lokomotif.",
+        "Pasang brick 2×2 hitam di depan sebagai cerobong.",
+        "Taruh plate 1×2 biru di belakang sebagai atap kabin.",
+        "Tambahkan empat round 1×1 hitam di bawah sebagai roda."
+      ],
+      "used": [
+        { "part": "brick-2x2", "color": "black", "quantity": 1 },
+        { "part": "brick-2x4", "color": "red", "quantity": 1 },
+        { "part": "plate-1x2", "color": "blue", "quantity": 1 }
+      ],
+      "missing": [
+        { "part": "round-1x1", "color": "black", "quantity": 4 }
+      ]
+    },
+    {
+      "id": "idea_w5n0",
+      "theme": "vehicles",
+      "difficulty": "easy",
+      "title": "Pesawat kecil",
+      "summary": "Badan putih, sayap biru, ekor hijau.",
+      "steps": [
+        "Pakai brick 1×4 putih sebagai badan pesawat.",
+        "Pasang plate 2×4 biru melintang di tengah sebagai sayap.",
+        "Taruh slope 2×2 hijau di belakang sebagai ekor."
+      ],
+      "used": [
+        { "part": "slope-2x2", "color": "green", "quantity": 1 }
+      ],
+      "missing": [
+        { "part": "brick-1x4", "color": "white", "quantity": 1 },
+        { "part": "plate-2x4", "color": "blue", "quantity": 1 }
+      ]
+    }
+  ]
+}
+```
+
+Errors: `400 invalid_request` for an unknown theme or locale, `404 not_found`, `409 no_pieces` when the scan has no pieces left to build with, `503 unavailable`, `504 timeout`. The web app never asks for ideas for a scan with no pieces.
+
+### `GET /scans/{scanId}/ideas/{ideaId}`
+
+`getIdea(scanId, ideaId)`: one idea from the scan's latest set, with that set, exactly as it was written. Ideas come back in the language they were written in, never translated, so the client compares `set.locale` with the page's language.
+
+It answers `404 not_found` when the scan is gone or its latest set has no idea with this id: the set was replaced, or a correction dropped it. The client returns `null` and, as today, asks `GET /scans/{scanId}` to tell a replaced idea from a deleted scan.
+
+```http
+GET /v1/scans/scn_4kd2p9/ideas/idea_r4c8 HTTP/1.1
+Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+```
+
+```jsonc
+{
+  "idea": {
+    "id": "idea_r4c8",
+    "theme": "vehicles",
+    "difficulty": "easy",
+    "title": "Mobil balap kecil",
+    // …the rest of the idea, as in the example above
+  },
+  "set": {
+    "theme": "vehicles",
+    "locale": "id",
+    "items": [/* all three ideas of the set, as above */]
+  }
+}
+```

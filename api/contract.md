@@ -572,3 +572,60 @@ Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
   }
 }
 ```
+
+## 6. Errors
+
+Every error answers with one body:
+
+```json
+{
+  "error": {
+    "code": "invalid_request",
+    "message": "changes[1].quantity must be from 1 to 20.",
+    "field": "changes[1].quantity"
+  }
+}
+```
+
+- `code` is one of the codes below. Clients act on it alone.
+- `message` is English, for logs and developers. People never see it: the web app writes its own message, in the page's language, from the code.
+- `field` is only there for `invalid_request`: the path of the first field that failed.
+
+| Code | Status | When | In the web app |
+| --- | --- | --- | --- |
+| `invalid_request` | 400 | The body, a field or a header fails validation: no photo part, an unknown theme, locale, part or color, a quantity out of range, no `Legoin-Device-Id`. | A bug: the call rejects with a plain `Error`, and the screen shows its generic message. |
+| `not_found` | 404 | No scan, job or idea with this id for this device. | `getScan` and `getIdea` return `null`; the other calls reject. |
+| `no_pieces` | 409, or in a failed job | The scan has no pieces to build with (ideas), or the models found none in the photo (scan). | `ApiError("no_pieces")` |
+| `photo_too_large` | 413 | The photo is over 10 MB. | The client checks first and shows its own message (`PhotoProblem` `size`). |
+| `photo_type` | 415 | The photo isn't JPEG, PNG or WebP, or can't be decoded. | The client checks first (`PhotoProblem` `type`). |
+| `too_dark` | in a failed job | The photo is too dark to read. | `ApiError("too_dark")` |
+| `too_blurry` | in a failed job | The photo is too blurry to read. | `ApiError("too_blurry")` |
+| `timeout` | 504, or in a failed job | The scan or the ideas ran past their deadline. | `ApiError("network")`, until legoin-web has a `timeout` reason |
+| `unavailable` | 503 | A model or the LLM provider is down or overloaded. It may send `Retry-After`. | `ApiError("network")` |
+| `internal` | 500 | Anything else. | `ApiError("network")` |
+
+A failed scan job isn't an HTTP error. The poll that reads it worked, so it answers `200` with the error in the job, in the same shape as the body above.
+
+### ScanFailure reasons
+
+`ScanFailure` in `domain.ts` is the reason an `ApiError` carries, which the screens turn into a message. Here's where each one comes from:
+
+| `ScanFailure` | Comes from |
+| --- | --- |
+| `no_pieces` | A failed scan job with `no_pieces`, or `409 no_pieces` from a request for ideas. |
+| `too_dark` | A failed scan job with `too_dark`. |
+| `too_blurry` | A failed scan job with `too_blurry`. |
+| `network` | Never sent by the backend. The client uses it when it gets no usable answer: `fetch` rejects (offline, DNS, CORS), the status is 5xx, the code is `timeout`, `unavailable` or `internal`, the body can't be read, or polling gives up. |
+
+The models decide which photo problem to report. The mock fails photos after the `detecting` stage, so `onStage` hears `detecting` before a photo failure; the real backend may fail at any stage.
+
+### Timeouts
+
+| What | Deadline | Then |
+| --- | --- | --- |
+| A scan job | 30 s after the upload | The job ends `failed` with `timeout`. |
+| A request for ideas | 30 s | `504 timeout`. Nothing is saved. |
+| The client, polling a job | 45 s with no ending, or 3 polls in a row with no answer | It sends `DELETE /scan-jobs/{jobId}` and rejects with `network`. |
+| The client, waiting for ideas | 40 s | It aborts the request and rejects with `network`. |
+
+These are the limits for failing, not the target. The target is under 15 seconds; see [Rules](#7-rules).

@@ -629,3 +629,28 @@ The models decide which photo problem to report. The mock fails photos after the
 | The client, waiting for ideas | 40 s | It aborts the request and rejects with `network`. |
 
 These are the limits for failing, not the target. The target is under 15 seconds; see [Rules](#7-rules).
+
+## 7. Rules
+
+### Ideas come in the requested language, and are never translated
+
+- `locale` is `en` or `id` ([ADR-0004](../decisions/0004-english-default-with-indonesian.md)). The agent writes each idea's `title`, `summary` and `steps` in it.
+- In Indonesian, color names are Indonesian and part names stay in the hobby's English, as in the UI: "brick 2×4 merah", "plate 1×2 biru".
+- A set is written once, in one language, and keeps it. The backend never rewrites a stored set into another language, and `GET /scans/{scanId}/ideas/{ideaId}` returns it as written. Asking in the other language writes a new set, which replaces the old one.
+- Ids, themes, difficulty, part ids and color ids are the same in every language.
+
+### Every idea passes `cek_inventori`
+
+The PRD's `cek_inventori` check splits what a build needs into parts the person owns and parts they don't. The contract guarantees its result, whatever the agent does:
+
+- The agent proposes each build with the full list of parts it needs, as part, color and quantity, and must call the `cek_inventori` tool with that list.
+- The backend then runs the check itself on the final list, against the scan's inventory at the time of the request, and writes `used` and `missing` from its result. It never takes the model's own split. So a part the person doesn't have is always listed in `missing`, never counted as owned.
+- The check is the one in legoin-web's `checkInventory`: for each line, `used` gets what the inventory covers, up to what's needed, and `missing` gets the rest. Each idea is checked against the whole inventory, independently of the other ideas.
+- `used` never holds more of a line than the inventory does, and `used` plus `missing` is exactly what the build needs. `missing` may be empty. Lines are sorted the same way as the [inventory](#inventory).
+- Ideas only use parts and colors from [the catalogue](#the-catalogue). An idea that needs anything else isn't returned; the agent writes another.
+
+### Under 15 seconds from photo to ideas
+
+- The PRD's target: under 15 seconds from photo to ideas, for a photo of up to 30 pieces, as many as the detector's busiest training photos hold.
+- It's measured on the backend: from the end of the upload until the scan job is `done`, plus the time to answer the request for ideas. The time the person spends checking their pieces in between, and the phone's own network time, don't count.
+- Budget: about 5 seconds for the scan and 10 for the ideas. The [deadlines](#timeouts) are where a call fails, not the target.

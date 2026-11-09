@@ -10,7 +10,7 @@ This is the contract between legoin-web and the Python backend. The backend runs
 
 In legoin-web, screens read and write only through the data layer, `src/lib/api`. Today a browser-side mock serves it from `localStorage`. Setting `NEXT_PUBLIC_API_URL` will switch it to an HTTP client for this API. Every function in the data layer has an endpoint here, and every shape matches `domain.ts`, so the switch changes nothing outside `src/lib/api`.
 
-Parts the team hasn't decided yet are marked **Open question** and collected in [Open questions](#8-open-questions). Technical choices this draft makes on its own are collected in [Decisions in this draft](#9-decisions-in-this-draft), so a reviewer can push back on them.
+Parts the team hasn't decided yet are marked **Open question** and collected in [Open questions](#9-open-questions). Technical choices this draft makes on its own are collected in [Decisions in this draft](#10-decisions-in-this-draft), so a reviewer can push back on them.
 
 ## 1. Overview
 
@@ -33,10 +33,11 @@ A visit goes: upload a photo and follow the scan's stages, check and correct the
 - **Optional fields** are left out when they have no value, never sent as `null`. The exceptions are a detection's `box` and `confidence`, which are always present and `null` for a piece added by hand.
 - **Unknown fields.** A client ignores fields it doesn't know, so the backend can add an optional field within a version.
 - **Times** are ISO 8601 in UTC, ending in `Z`, e.g. `2026-11-09T03:12:45.120Z`. Sorting them as strings sorts them by time.
-- **Ids** are opaque strings the backend makes: URL-safe (`A–Z a–z 0–9 _ -`), at most 64 characters. The client never parses one. The only id the client sends back unprompted is a detection's, in a `restore` change.
-- **Whose scans.** Every request carries a `Legoin-Device-Id` header, and the backend only shows a device its own scans. This is a placeholder until the team decides on accounts. See [Open questions](#8-open-questions) 2 and 4.
+- **Ids** are opaque strings the backend makes: URL-safe (`A–Z a–z 0–9 _ -`), at most 64 characters. The client never parses or makes one; a `restore` change sends a detection back with the id the backend gave it.
+- **Whose scans.** **Open question.** Every request carries a `Legoin-Device-Id` header, and the backend only shows a device its own scans. This is a placeholder until the team decides on accounts and history; see [Open questions](#9-open-questions) 2 and 4.
 - **CORS.** The data layer runs in the browser, in Client Components, so the browser calls the API directly. The API allows the web app's origins, the methods `GET`, `POST`, `PATCH` and `DELETE`, and the request headers `Content-Type` and `Legoin-Device-Id`.
-- **Errors** share one body. See [Errors](#5-errors).
+- **Errors** share one body. See [Errors](#6-errors).
+- **Examples** use `https://api.legoin.example/v1` as the base. The ones marked `jsonc` are shortened with comments; real answers are plain, complete JSON.
 
 ## 3. Shapes
 
@@ -108,11 +109,11 @@ type ApiErrorBody = {
 };
 ```
 
-`ErrorCode` is listed in [Errors](#5-errors), and `BrickPartId` and `BrickColorId` in [the catalogue](#the-catalogue).
+`ErrorCode` is listed in [Errors](#6-errors), and `BrickPartId` and `BrickColorId` in [the catalogue](#the-catalogue).
 
 ### Photo
 
-- `src` is an absolute URL that a plain `<img>` can load, with no extra headers, for as long as the scan exists.
+- `src` is an absolute URL that a plain `<img>` can load, with no extra headers, for as long as the scan exists. Where photos are stored, and for how long, is an **open question** ([3](#9-open-questions)).
 - `width` and `height` are that image's size in pixels, upright. The backend applies the photo's EXIF orientation before it detects or stores anything, so boxes and pixels agree.
 
 ### Detection
@@ -180,7 +181,7 @@ The catalogue is the PRD's MVP: 10 colors and 13 parts. The backend only ever se
 `createScan(photo, { onStage, signal })` uploads a photo, reports the pipeline's stages as they happen, and resolves with the saved scan. Over HTTP that's a scan job the client polls:
 
 1. `POST /scan-jobs` uploads the photo and answers `202` with a running job.
-2. The client asks `GET /scan-jobs/{jobId}` every 500 ms and passes each job's `stage` to `onStage`. The data layer's `inOrder` already drops repeats and steps back, and a stage that changed between two polls is skipped.
+2. The client asks `GET /scan-jobs/{jobId}` every 500 ms and passes each job's `stage` to `onStage`. The data layer's `inOrder` already drops repeats and steps back. A stage that starts and ends between two polls is never seen, and that's fine.
 3. When the job is `done`, `createScan` resolves with its `scan`. When it's `failed`, `createScan` rejects with an `ApiError` whose reason comes from the job's error (see [the mapping](#scanfailure-reasons)).
 
 **Cancelling.** When `signal` aborts, the client stops polling and rejects with an `AbortError` straight away. It also sends `DELETE /scan-jobs/{jobId}` without waiting for the answer (`fetch` with `keepalive`). The backend saves nothing for a cancelled job. If the upload itself is aborted before the `202` arrives, the client has no job id to cancel, so a job the backend already accepted finishes and its scan shows up in history. This draft accepts that rare case.
@@ -371,7 +372,7 @@ Rules:
 - **Unknown ids are ignored.** An `edit` or `remove` for an id the scan doesn't have changes nothing, so a retried request or an undo is safe to send twice.
 - **Ideas follow the inventory.** The backend compares the inventory before and after. If it changed, the scan's `ideas` are dropped, because they were checked against the pieces as they were, and the next request for ideas checks the corrected ones. If it's the same, as when a flagged piece is confirmed, the `ideas` stay. Either way `lastTheme` stays.
 
-This request recolors the flagged piece and adds a blue plate the detector missed. The scan had ideas, and the inventory changed, so they're gone; `lastTheme` is still there:
+Say the scan from the job above already had ideas for `vehicles`. This request recolors its flagged piece and adds a blue plate the detector missed. The inventory changed, so the answer has no `ideas`, but `lastTheme` is still there:
 
 ```http
 PATCH /v1/scans/scn_4kd2p9/detections HTTP/1.1
@@ -446,7 +447,7 @@ HTTP/1.1 204 No Content
 
 ### `POST /scans/{scanId}/ideas`
 
-`getIdeas(scanId, theme, locale, { exclude })`: asks the agent for three new ideas and answers `200` with the `IdeaSet`. The data layer resolves with its `items`.
+`getIdeas(scanId, theme, locale, { exclude })`: asks the agent for three new ideas and answers `200` with the `IdeaSet`. The data layer resolves with its `items`. Which LLM provider runs the agent is an **open question** ([1](#9-open-questions)); nothing here depends on it.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -464,6 +465,8 @@ What the backend does:
 A request that fails changes nothing: the scan keeps its earlier `ideas` and `lastTheme`. When two requests for one scan overlap, the one that finishes last is the set that's kept.
 
 Idea ids are unique within a scan and never reused for a different idea, so an old link to an idea that has since been replaced answers `404` rather than showing another idea.
+
+This request comes after the correction above, in Indonesian, with three ideas already shown. Each idea is checked against the scan's four pieces: a red brick 2×4, a green slope 2×2, a black brick 2×2 and a blue plate 1×2.
 
 ```http
 POST /v1/scans/scn_4kd2p9/ideas HTTP/1.1
@@ -651,6 +654,7 @@ The PRD's `cek_inventori` check splits what a build needs into parts the person 
 
 ### Under 15 seconds from photo to ideas
 
-- The PRD's target: under 15 seconds from photo to ideas, for a photo of up to 30 pieces, as many as the detector's busiest training photos hold.
+- The PRD's target: under 15 seconds from photo to ideas. This draft sets it for a photo of up to 32 pieces, the most the detector's training photos hold.
 - It's measured on the backend: from the end of the upload until the scan job is `done`, plus the time to answer the request for ideas. The time the person spends checking their pieces in between, and the phone's own network time, don't count.
 - Budget: about 5 seconds for the scan and 10 for the ideas. The [deadlines](#timeouts) are where a call fails, not the target.
+

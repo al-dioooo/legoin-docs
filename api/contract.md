@@ -1,7 +1,7 @@
 # Legoin API Contract
 
 - Status: Draft, under review in #7
-- Version: 0.2
+- Version: 0.3
 - Date: 2026-11-25
 - Issue: #7
 - Source of the shapes: `src/lib/domain.ts` and `src/lib/api` in [legoin-web](https://github.com/al-dioooo/legoin-web), on `main` at `a05024d`
@@ -25,7 +25,7 @@ Parts the team hasn't decided yet are marked **Open question** and collected in 
 | `listScans()` | [`GET /scans`](#get-scans) | `{ scans: Scan[] }`, newest first |
 | `updateDetections(id, changes)` | [`PATCH /scans/{scanId}/detections`](#patch-scansscaniddetections) | The updated `Scan` |
 | `deleteScan(id)` | [`DELETE /scans/{scanId}`](#delete-scansscanid) | 204 |
-| `getIdeas(scanId, theme, locale, { exclude })` | [`POST /scans/{scanId}/ideas`](#post-scansscanidideas) | An `IdeaSet` of 3 ideas |
+| `getIdeas(scanId, theme, locale, { exclude })` | [`POST /scans/{scanId}/ideas`](#post-scansscanidideas) | An `IdeaSet` of 3 ideas, or of the ideas still being built ([13](#13-ideas-built-from-the-scan)) |
 | `getIdea(scanId, ideaId)` | [`GET /scans/{scanId}/ideas/{ideaId}`](#get-scansscanidideasideaid) | `StoredIdea`, or 404, which the client turns into `null` |
 
 A visit goes: log in or make an account, upload a photo and follow the scan's stages, check and correct the pieces, ask for ideas in a theme, open one idea, and come back to the scan later from history, on any device.
@@ -45,7 +45,7 @@ A visit goes: log in or make an account, upload a photo and follow the scan's st
 
 ## 3. Shapes
 
-Written as TypeScript because `domain.ts` is; the backend can mirror them with Pydantic models. Everything here is in `domain.ts` or `bricks.ts` with the same names and fields, except `ScanJob`, `Session` and `ApiErrorBody`, which only exist on the wire. `Account` and `Session` came with accounts ([ADR-0011](../decisions/0011-accounts-with-email-and-password.md)). `Idea`'s `buildId` and `preview`, and `Preview`, were added after `a05024d` ([ADR-0010](../decisions/0010-library-of-checked-builds.md)).
+Written as TypeScript because `domain.ts` is; the backend can mirror them with Pydantic models. Everything here is in `domain.ts` or `bricks.ts` with the same names and fields, except `ScanJob`, `Session` and `ApiErrorBody`, which only exist on the wire. `Account` and `Session` came with accounts ([ADR-0011](../decisions/0011-accounts-with-email-and-password.md)). `Idea`'s `buildId` and `preview`, and `Preview`, were added after `a05024d` ([ADR-0010](../decisions/0010-library-of-checked-builds.md)). `IdeaSet.building` and `BuildingIdea` came with ideas built from the scan ([ADR-0013](../decisions/0013-ideas-built-from-the-scan.md), [section 13](#13-ideas-built-from-the-scan)).
 
 ```ts
 type Scan = {
@@ -89,14 +89,22 @@ type Idea = {
   steps: string[];
   used: PartCount[]; // parts the person owns that the build uses
   missing: PartCount[]; // parts the build needs that the person doesn't have
-  buildId?: string; // the checked build this idea is, from the backend's library
+  buildId?: string; // the checked build this idea is: the library's, or one the agent built from the scan
   preview?: Preview; // pictures of that build; sent with buildId
 };
 
 /** A checked build's picture and LDraw model, as absolute URLs. */
 type Preview = { image: string; model: string };
 
-type IdeaSet = { theme: Theme; locale: Locale; items: Idea[] };
+type IdeaSet = {
+  theme: Theme;
+  locale: Locale;
+  items: Idea[];
+  building?: BuildingIdea[]; // ideas the agent is still building from the scan; left out when none
+};
+
+/** An idea still being built (section 13): it joins `items` with the same id when it's done. */
+type BuildingIdea = { id: string; theme: IdeaTheme };
 
 type StoredIdea = { idea: Idea; set: IdeaSet };
 
@@ -170,6 +178,7 @@ Some ideas are a checked build from the backend's library: built from real parts
 - **`preview.model`** is an absolute URL of the build as an LDraw file (`.ldr`), served as a download. It names parts from the LDraw.org Parts Library and doesn't include them.
 - **Both URLs are public and versioned.** They carry nothing about the account, and a URL never changes what it serves, so clients and proxies may cache it for good. Where the backend serves them is its choice.
 - **`buildId` and `preview` come together:** an idea has both or neither.
+- **An idea the agent built from the scan** ([section 13](#13-ideas-built-from-the-scan)) has them too. Its `buildId` starts with `gen_`, and its URLs are unguessable files of the account's, like `photo.src`: they need no header, aren't versioned, and are served while the idea is in its scan's set.
 - **The client** writes the picture's alt text itself, from the title, in the page's language. Wherever it shows pictures, it credits the LDraw.org Parts Library, BrickLayer and BrickWright, and the LEGO trademark line, as ADR-0010 lists.
 
 ### The catalogue
@@ -588,7 +597,7 @@ HTTP/1.1 204 No Content
 
 ### `POST /scans/{scanId}/ideas`
 
-`getIdeas(scanId, theme, locale, { exclude })`: asks the agent for three new ideas and answers `200` with the `IdeaSet`. The data layer resolves with its `items`. Which LLM provider runs the agent is an **open question** ([1](#10-open-questions)); nothing here depends on it.
+`getIdeas(scanId, theme, locale, { exclude })`: asks the agent for three new ideas and answers `200` with the `IdeaSet`. The data layer resolves with the set, `building` included. Which LLM provider runs the agent is an **open question** ([1](#10-open-questions)); nothing here depends on it.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -599,6 +608,7 @@ HTTP/1.1 204 No Content
 What the backend does:
 
 - **Writes three ideas** in `locale`, each checked against the scan's inventory as it is now (see [Rules](#8-rules)). For `surprise`, it's one idea from each of `vehicles`, `animals` and `buildings`.
+- **Or builds them from the scan,** when it can ([section 13](#13-ideas-built-from-the-scan)): it answers at once, with the ideas still being built in `building`, and each joins `items` when its build is done. The client reads the set again with `GET /scans/{scanId}` until `building` is gone.
 - **Adds a picture** to each idea that's a checked build from its library: `buildId` and `preview` (see [Preview](#preview)).
 - **Keeps them.** The set becomes the scan's `ideas`, replacing the one before, and `theme` becomes its `lastTheme`.
 - **Avoids excluded ideas.** The backend remembers every idea it has written for a scan, not only the latest set, so it can tell the agent what was already shown. Ids it doesn't know are ignored.
@@ -699,7 +709,7 @@ Errors: `400 invalid_request` for an unknown theme or locale, `404 not_found`, `
 
 `getIdea(scanId, ideaId)`: one idea from the scan's latest set, with that set, exactly as it was written. Ideas come back in the language they were written in, never translated, so the client compares `set.locale` with the page's language.
 
-It answers `404 not_found` when the scan is gone or its latest set has no idea with this id: the set was replaced, or a correction dropped it. The client returns `null` and, as today, asks `GET /scans/{scanId}` to tell a replaced idea from a deleted scan.
+It answers `404 not_found` when the scan is gone or its latest set has no idea with this id: the set was replaced, a correction dropped it, or the idea is still in `building`, which has nothing to show yet. The client returns `null` and, as today, asks `GET /scans/{scanId}` to tell a replaced idea from a deleted scan.
 
 ```http
 GET /v1/scans/scn_4kd2p9/ideas/idea_r4c8 HTTP/1.1
@@ -861,7 +871,7 @@ Technical choices this draft makes so the contract is complete. Each can be chan
 1. **Stages reach the client by polling a scan job, not by server-sent events.** Polling holds up on unsteady phone connections: a lost poll is retried and the scan carries on, where a dropped stream would lose it. It's plain JSON that the backend can serve without streaming and that `curl` can test, and the data layer's `inOrder` was written for a backend that polls. The cost is 20 to 30 small requests per scan, and a stage shown up to 500 ms late. The alternative is one `POST` that streams `stage` events and is cancelled by closing it.
 2. **The scan job is a resource of its own.** `Scan` stays exactly as in `domain.ts`, with no status field, and a failed or cancelled scan never reaches history, as with the mock.
 3. **Cancelling also deletes a scan that has just finished,** so a cancel always means nothing is saved.
-4. **Ideas answer in one request,** since the agent's 10 seconds fit in an ordinary request and `getIdeas` has no stages to show.
+4. **Ideas answer in one request,** since the agent's 10 seconds fit in an ordinary request and `getIdeas` has no stages to show. Ideas built from the scan take about a minute, so that request answers at once and the set is read again until its builds are done ([section 13](#13-ideas-built-from-the-scan)).
 5. **The app's part and color ids go on the wire, not Rebrickable ids,** because the code uses them everywhere. The catalogue maps each one to its Rebrickable or design id.
 6. **The version is in the base URL (`/v1`), keys are camelCase, and optional fields are left out rather than `null`,** so answers parse straight into the types in `domain.ts`.
 7. **Errors share one body with a `code`.** `network` stays the client's own reason, and `timeout`, `unavailable` and `internal` are new codes.
@@ -887,300 +897,93 @@ The mock has grown since the issue was written, and the contract follows the cod
 - New since the issue: the `restore` change for undo, `exclude` for "Try other ideas", the latest set kept on the scan with `lastTheme`, and `GET /scans/{scanId}/ideas/{ideaId}`.
 - The issue lists `timeout` as a failure. The contract has it as an error code, and legoin-web's `ScanFailure` has it too since legoin-web#63, with its own message.
 
-## 13. Picture builds
+## 13. Ideas built from the scan
 
-- Status: **Accepted**, with [ADR-0012](../decisions/0012-picture-to-lego-builds.md), in #25.
+- Status: **Proposed**, with [ADR-0013](../decisions/0013-ideas-built-from-the-scan.md), in #27. It replaces version 0.2's picture builds and idea previews ([ADR-0012](../decisions/0012-picture-to-lego-builds.md)).
 
-A person uploads a picture, such as a car, an animal or a house, and the agent designs a LEGO build of it from [the catalogue](#the-catalogue). The backend checks every build with BrickLayer and renders it. The person gets a picture of the build, an LDraw model, the parts, the steps, and, against a scan they choose, what they own and what they're missing.
+After a scan, the agent builds the scan's ideas from the scan itself: it looks at the scan's photo and its pieces, as the person has corrected them, and designs up to three small LEGO models from only those pieces, within their counts. The backend checks every model with BrickLayer and renders it. Each finished model **is** an idea: its title, summary and steps, its `buildId` and `preview`, and `used` from [`cek_inventori`](#every-idea-passes-cek_inventori), with nothing `missing`.
 
-A build takes about a minute and costs the backend money, so it runs as a job, like a scan, and it's limited per account and per day. Every route here needs a session ([Accounts](#4-accounts)), except the file URLs.
+A set of builds takes about a minute and costs the backend money, so `POST /scans/{scanId}/ideas` answers at once and the builds finish in the background. No route is new.
 
-| Data layer (`src/lib/api`) | Endpoint | Answer |
-| --- | --- | --- |
-| `getPictureQuota()` | [`GET /picture-quota`](#get-picture-quota) | `PictureQuota` |
-| `createPictureBuild(picture, locale, { onStage, signal })` | [`POST /picture-jobs`](#post-picture-jobs), then [`GET /picture-jobs/{jobId}`](#get-picture-jobsjobid) until it ends. [`DELETE /picture-jobs/{jobId}`](#delete-picture-jobsjobid) cancels. | A `PictureJob` that ends with a `PictureBuild` |
-| `listPictureBuilds()` | [`GET /picture-builds`](#get-picture-builds) | `{ builds: PictureBuild[] }`, newest first |
-| `getPictureBuild(id, { scanId })` | [`GET /picture-builds/{buildId}`](#get-picture-buildsbuildid) | `PictureBuild`, or 404, which the client turns into `null` |
-| `deletePictureBuild(id)` | [`DELETE /picture-builds/{buildId}`](#delete-picture-buildsbuildid) | 204 |
+### How a set is answered
 
-### Picture build shapes
+- **Library builds first.** A slot gets a checked build from the library ([ADR-0010](../decisions/0010-library-of-checked-builds.md)) when the person owns every piece of one in the slot's theme, or all but one, and hasn't seen it. It's in `items` straight away, with its picture.
+- **Every other slot is built.** It's in `building` with the id its idea will have, and its theme. When its build is done, it leaves `building` and joins `items` with that id, after the ideas already there.
+- **Ideas written as text** answer as in version 0.2, with no `building`, whenever the backend can't build the set: building is off on that server, the account has started its sets for the day, the day's budget is spent, or too many sets are waiting. The client can't tell these apart, and doesn't need to.
+- **A build that fails** is replaced by an idea written as text for its slot, with the same id. So a set always ends with its ideas, and `building` always empties.
 
-```ts
-type PictureStage = "queued" | "designing" | "checking" | "rendering";
-
-type PictureJob =
-  | { id: string; status: "running"; stage: PictureStage }
-  | { id: string; status: "done"; build: PictureBuild }
-  | { id: string; status: "failed"; error: ApiErrorBody["error"] };
-
-type PictureBuild = {
-  id: string;
-  createdAt: string; // ISO 8601, UTC: when the build was saved
-  locale: Locale; // the language its title, summary and steps are written in
-  title: string;
-  summary: string;
-  steps: string[];
-  parts: PartCount[]; // every part the build needs, sorted like an inventory
-  picture: Photo; // the uploaded picture, as kept
-  preview: Preview; // the rendered build and its LDraw model
-  plain?: true; // the title, summary and steps are the backend's plain ones
-  check?: PictureCheck; // only when asked for with ?scanId=
-};
-
-type PictureCheck = {
-  scanId: string;
-  used: PartCount[]; // parts the person owns that the build uses
-  missing: PartCount[]; // parts the build needs that the person doesn't have
-};
-
-type PictureQuota = {
-  available: boolean; // whether POST /picture-jobs would take a picture now
-  reason?: "off" | "limit" | "budget"; // why not, when it wouldn't
-  used: number; // picture jobs this account started today (UTC)
-  limit: number; // how many it may start a day
-  resetsAt: string; // ISO 8601, UTC: the next midnight, when `used` goes back to 0
-};
-```
-
-- **`parts`** are only catalogue parts and colors, at most 60 pieces in all.
-- **`picture`** is the uploaded picture, upright, re-encoded as JPEG with its EXIF metadata removed. `src` is an absolute URL with an unguessable name, as `photo.src` is ([open question 3](#10-open-questions)).
-- **`preview.image`** is an isometric picture of the build, a square WebP of 640 × 640 pixels on a transparent background, from the same angle as the library's. **`preview.model`** is the build as an LDraw file (`.ldr`), served as a download, with the same credit lines in its header as the library's. Both are absolute URLs with unguessable names, which load with no header for as long as the build exists. The client credits them as it does [library pictures](#preview).
-- **`plain`** is there when a limit ended the job after the agent had made a valid build but before it wrote its own text: the build stands, its title and summary are plain, and its steps list the pieces level by level, from the bottom up. Otherwise it's left out.
-- **`check`** is [`cek_inventori`](#every-idea-passes-cek_inventori) of `parts` against the scan's inventory at the time of the request, with the same rules as an idea's `used` and `missing`.
-
-### What every picture build is
-
-- **Physically valid,** as BrickLayer checks it: no two pieces collide, nothing floats, and every piece joins one connected assembly. A build that fails is never saved.
-- **Designed with tools, never with code.** The agent places and removes catalogue pieces on a stud grid, asks for the checks and for renders, and finishes. The backend applies each call itself. Nothing the model writes is run.
-- **Written in the requested language,** with the rules for [ideas](#ideas-come-in-the-requested-language-and-are-never-translated): Indonesian color names and the hobby's English part names in `id`. A build keeps the language it was written in.
-
-**What's sent to the model provider:** the picture and the language. Never the account's id or email. The web app says so before the person uploads.
-
-### `GET /picture-quota`
-
-`getPictureQuota()`: whether this account can start a picture job now, and how many it has left today. The web app reads it before showing the upload.
-
-```http
-GET /v1/picture-quota HTTP/1.1
-Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
-```
+This answer comes after the scan above, for `vehicles`, in English. No library build fits the scan's three pieces, so all three slots are building:
 
 ```json
-{ "available": true, "used": 1, "limit": 2, "resetsAt": "2026-11-26T00:00:00.000Z" }
-```
-
-`reason` says why `available` is `false`:
-
-| `reason` | When |
-| --- | --- |
-| `off` | Picture builds aren't turned on on this backend. |
-| `limit` | This account has started `limit` jobs today. |
-| `budget` | The backend has spent its budget for the day. |
-
-A full queue isn't a reason here: it passes in seconds, and `POST /picture-jobs` answers it with `Retry-After`.
-
-### `POST /picture-jobs`
-
-Uploads one picture as `multipart/form-data`, with two parts:
-
-- `picture`: JPEG, PNG or WebP, at most 10 MB, with the same checks as a scan's photo;
-- `locale`: `en` or `id`, the language to write the build's text in.
-
-It answers `202` with a job waiting for its turn:
-
-```http
-POST /v1/picture-jobs HTTP/1.1
-Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
-Content-Type: multipart/form-data; boundary=legoin
-
---legoin
-Content-Disposition: form-data; name="picture"; filename="car.jpg"
-Content-Type: image/jpeg
-
-<JPEG bytes>
---legoin
-Content-Disposition: form-data; name="locale"
-
-en
---legoin--
-```
-
-```json
-{ "id": "pjob_Q3v8tL2x", "status": "running", "stage": "queued" }
-```
-
-A job that's taken counts toward today's `limit` straight away. It's given back if the job then fails with `unavailable`, `internal` or `picture_budget`, or is cancelled before it leaves `queued`.
-
-Errors:
-
-- `400 invalid_request` when there's no `picture` part or `locale` isn't `en` or `id`;
-- `413 photo_too_large` and `415 photo_type`, as for a scan's photo;
-- `429 picture_limit` when this account has started `limit` jobs today, with `Retry-After` until midnight UTC;
-- `503 picture_budget` when the backend has spent its budget for the day, with `Retry-After` until midnight UTC;
-- `503 unavailable` when picture builds are off, with no `Retry-After`, or when the queue is full, with `Retry-After` in seconds.
-
-### `GET /picture-jobs/{jobId}`
-
-The job as it is now, as for a [scan job](#get-scan-jobsjobid). A running job reports its stage:
-
-| Stage | What the backend is doing |
-| --- | --- |
-| `queued` | Waiting for the job before it to finish. One job runs at a time. |
-| `designing` | The agent is designing the build. Most of the minute goes here. |
-| `checking` | Checking the finished build once more, and counting its parts. |
-| `rendering` | Rendering its picture and writing its LDraw model. |
-
-The stage only moves forward. A finished job carries the saved build, which `GET /picture-builds` now lists too:
-
-```jsonc
 {
-  "id": "pjob_Q3v8tL2x",
-  "status": "done",
-  "build": {
-    "id": "pic_8KfD2mQx1Zr",
-    "createdAt": "2026-11-25T08:41:05.000Z",
-    "locale": "en",
-    "title": "Little Red Car",
-    "summary": "A red car with four black wheels, a sloped cabin with blue side windows, yellow headlights at the front and orange taillights at the back.",
-    "steps": [
-      "Stand four black round 1×1 bricks as wheels at the corners, 2 studs in from each end.",
-      "Lay five black 2×4 plates on top to make a chassis 10 studs long and 4 studs wide."
-      // …
-    ],
-    "parts": [
-      { "part": "brick-2x4", "color": "red", "quantity": 9 },
-      { "part": "plate-2x4", "color": "black", "quantity": 5 }
-      // …
-    ],
-    "picture": { "src": "https://api.legoin.example/v1/picture-files/n4Qk0vXb7cT2mZr9LwYe1A.jpg", "width": 900, "height": 600 },
-    "preview": {
-      "image": "https://api.legoin.example/v1/picture-files/Hq7bW3pZ0sKd5yRf2LmNcQ.webp",
-      "model": "https://api.legoin.example/v1/picture-files/Vt8cX1nB6qLs4wJe9KdRaQ.ldr"
-    }
+  "theme": "vehicles",
+  "locale": "en",
+  "items": [],
+  "building": [
+    { "id": "idea_b7q2", "theme": "vehicles" },
+    { "id": "idea_c3m8", "theme": "vehicles" },
+    { "id": "idea_d9x4", "theme": "vehicles" }
+  ]
+}
+```
+
+A minute later, `GET /scans/{scanId}` has the finished set in `ideas`. The first idea, for example:
+
+```json
+{
+  "id": "idea_b7q2",
+  "theme": "vehicles",
+  "difficulty": "easy",
+  "title": "Little red racer",
+  "summary": "A red racer with a green hood and a dark gray cab.",
+  "steps": [
+    "Put the dark gray 2×2 brick down as the back of the car.",
+    "Put the red 2×4 brick on it, overhanging two studs at the front.",
+    "Put the green 2×2 slope on the front of the red brick as the hood."
+  ],
+  "used": [
+    { "part": "brick-2x2", "color": "dark-gray", "quantity": 1 },
+    { "part": "brick-2x4", "color": "red", "quantity": 1 },
+    { "part": "slope-2x2", "color": "green", "quantity": 1 }
+  ],
+  "missing": [],
+  "buildId": "gen_Ue3nVb81qQ2wTzKp4mXaLc",
+  "preview": {
+    "image": "https://api.legoin.example/v1/picture-files/2kD9fQwXr7pL0sZcVb3nMa.webp",
+    "model": "https://api.legoin.example/v1/picture-files/8hT4jYuIo1pAsDfGhJkLzx.ldr"
   }
 }
 ```
 
-A failed job carries the error, and nothing was saved:
+### What the client does
 
-```json
-{
-  "id": "pjob_Q3v8tL2x",
-  "status": "failed",
-  "error": { "code": "picture_unusable", "message": "There's no clear subject in the picture to build." }
-}
-```
+- **On the ideas list,** it shows a card for each idea in `items` and a placeholder for each in `building`, and reads `GET /scans/{scanId}` every 3 seconds while `building` is there. It takes the new set only while it's the same set: the same ideas, in `items` or `building`, that it showed. A new set ("Try other ideas", another theme) stops the reads.
+- **The idea's page** only opens for an idea in `items`.
+- **`exclude`** lists the ids in `items`, as before. Ids in `building` are never sent: the backend doesn't know them as ideas yet.
 
-| Code in a failed job | When |
-| --- | --- |
-| `picture_unusable` | The agent found no clear subject to build: a blank, abstract, very dark or blurry picture, or only text. |
-| `picture_refused` | The model declined the picture, or the agent found it unsuitable for a family building app. |
-| `no_valid_build` | A limit on the job's cost, model calls or time ended it before the agent made a valid build. |
-| `picture_budget` | The backend's daily budget ran out before the job could start. |
-| `timeout` | The job ran past its deadline. |
-| `unavailable` | The model provider couldn't be reached or was overloaded. |
-| `internal` | Anything else. |
+### Builds belong to their set
 
-The rules of a scan job hold: a failed job still answers `200`, an ended job is kept for at least 10 minutes, and only an unknown job is `404 not_found`.
+- **Asking for ideas again**, or a correction that drops the scan's `ideas`, cancels the old set's builds that haven't finished, and deletes the ones that have.
+- **Deleting the scan** deletes its builds.
+- A built idea's files are served at `GET /picture-files/{name}`, which needs no header, while its idea is in the set.
 
-### `DELETE /picture-jobs/{jobId}`
+### Limits
 
-Cancels the job and answers `204` with no body, as for a [scan job](#delete-scan-jobsjobid). The backend stops the job at once and saves nothing; if the job had already finished, it deletes the build the job saved. An unknown or forgotten job also answers `204`. What the job spent before the cancel still counts toward the daily budget.
+The backend's own limits (the daily budget, the sets each account may start a day, the cost and time a build may take, and the queue's length) are its configuration, which [ADR-0013](../decisions/0013-ideas-built-from-the-scan.md) sets out. Past any of them, ideas are written as text: no limit is ever an error for the client.
 
-### `GET /picture-builds`
+### Changes from version 0.2
 
-`listPictureBuilds()`: this account's picture builds, newest first by `createdAt`, wrapped like [`GET /scans`](#get-scans). None answers `{ "builds": [] }`. The builds carry no `check`.
+Version 0.2 had picture builds: a page of its own where a person uploaded any picture and the agent built its subject, ignoring their bricks. Ideas the agent wrote got a preview built after the fact, with no photo. Both are gone.
 
-### `GET /picture-builds/{buildId}`
+- **Breaking:** `GET /picture-quota`, `POST /picture-jobs`, `GET` and `DELETE /picture-jobs/{jobId}`, `GET /picture-builds`, and `GET` and `DELETE /picture-builds/{buildId}` are removed, with `PictureJob`, `PictureBuild`, `PictureCheck` and `PictureQuota`, and the error codes `picture_limit`, `picture_budget`, `picture_unusable`, `picture_refused` and `no_valid_build`.
+- **Breaking:** `Idea.previewStatus` is removed.
+- **New:** `IdeaSet.building` and `BuildingIdea`.
+- `GET /picture-files/{name}` stays, for built ideas' files.
 
-`getPictureBuild(id, { scanId })`: one build. With `?scanId=`, it adds `check` against that scan, as the scan is now:
-
-```http
-GET /v1/picture-builds/pic_8KfD2mQx1Zr?scanId=scn_4kd2p9 HTTP/1.1
-Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
-```
-
-```jsonc
-{
-  "id": "pic_8KfD2mQx1Zr",
-  // …the rest of the build, as above
-  "check": {
-    "scanId": "scn_4kd2p9",
-    "used": [{ "part": "brick-2x4", "color": "red", "quantity": 1 }],
-    "missing": [
-      { "part": "brick-2x4", "color": "red", "quantity": 8 },
-      { "part": "plate-2x4", "color": "black", "quantity": 5 }
-      // …
-    ]
-  }
-}
-```
-
-An unknown build, or another account's, answers `404 not_found`, and the client returns `null`. A `scanId` that isn't one of this account's scans leaves `check` out, since the build itself is there; the client compares `check.scanId` with the scan it asked about.
-
-### `DELETE /picture-builds/{buildId}`
-
-`deletePictureBuild(id)`: deletes the build with its picture, preview and model, and answers `204` with no body. An unknown build also answers `204`.
-
-### Errors and limits for picture builds
-
-These codes are new, and only picture builds use them:
-
-| Code | Status | When | In the web app |
-| --- | --- | --- | --- |
-| `picture_limit` | 429 | This account has started its picture jobs for today. Sent with `Retry-After`. | A message with when it resets, from `GET /picture-quota` |
-| `picture_budget` | 503, or in a failed job | The backend has spent its budget for the day. Sent with `Retry-After`. | A message to try again tomorrow |
-| `picture_unusable` | in a failed job | No clear subject to build. | A message to try a clearer picture of one thing |
-| `picture_refused` | in a failed job | The model declined the picture, or the agent found it unsuitable. | A message to try another picture |
-| `no_valid_build` | in a failed job | A limit ended the job before a valid build. | A message to try again, or a simpler picture |
-
-| What | Deadline | Then |
-| --- | --- | --- |
-| A picture job, from leaving `queued` | 6 minutes | The job ends `failed` with `timeout`. |
-| The client, polling a picture job | Every second; 10 minutes with no ending, or 3 polls in a row with no answer | It sends `DELETE /picture-jobs/{jobId}` and rejects with `network`. |
-
-The backend's own limits (the daily budget, the jobs per account a day, the cost and time a job may take, and the queue's length) are its configuration, which [ADR-0012](../decisions/0012-picture-to-lego-builds.md) sets out. The client learns the ones it needs from `GET /picture-quota` and `Retry-After`.
-
-### Idea previews
-
-Ideas the agent writes itself get a picture too, built after the ideas are answered by the same engine as picture builds ([ADR-0012](../decisions/0012-picture-to-lego-builds.md), "Idea previews"). `POST /scans/{scanId}/ideas` answers as it does today, within its deadline; a preview never slows it down or fails it. Library ideas keep the `buildId` and `preview` they've always had.
-
-One optional field joins `Idea` ([Shapes](#3-shapes)):
-
-```ts
-type Idea = {
-  // …every field in section 3, and:
-  previewStatus?: "pending" | "on_open" | "ready" | "unavailable";
-};
-```
-
-| `previewStatus` | What it means | What the client does |
-| --- | --- | --- |
-| left out | The backend makes no preview for this idea: it's a library idea with its own `preview`, or previews are off. | As today. |
-| `pending` | The preview is waiting for its turn or being built. | Shows that a picture is coming, and reads the idea again every 3 seconds, with `GET /scans/{scanId}` on the ideas list or `GET /scans/{scanId}/ideas/{ideaId}` on the idea's page, until the status changes. |
-| `on_open` | The backend builds the preview when this idea's page is opened. | Nothing on the list. `GET /scans/{scanId}/ideas/{ideaId}` starts the build and already answers `pending`. |
-| `ready` | The preview is built. | Shows `preview`. |
-| `unavailable` | No preview will come: a limit or the budget was reached, or the build couldn't be made. | Shows the idea as text, as today. |
-
-When a preview is `ready`, **the build is the idea:**
-
-- `buildId` and `preview` are there. A built preview's `buildId` starts with `gen_`, and its `preview` URLs are unguessable files of this account's, like a picture build's.
-- `steps` and `summary` are rewritten to match the build, in the set's language; the title stays.
-- `used` and `missing` come from [`cek_inventori`](#every-idea-passes-cek_inventori) of the build's own parts against the scan's inventory at that moment. The build may use more or fewer of each of the idea's parts and colors than it listed, but no others.
-
-So the picture, the parts and the steps never disagree. A client that kept the idea from before reads it again.
-
-Previews belong to the set they were made for:
-
-- **Asking for ideas again**, or a correction that drops the scan's `ideas`, cancels the old set's previews that haven't finished. Their builds are deleted with the old set.
-- **Deleting the scan** deletes its previews.
-- **Previews count toward the backend's daily budget** for picture builds. Each account also has a daily number of previews; past it, or past the budget, a new idea's `previewStatus` is `unavailable` straight away.
+The base URL stays `/v1`: the contract is a draft, and nothing removed was ever used outside the web app, which drops it in legoin-web#82. The web app follows this version before the API does (see legoin-api#38).
 
 **Decisions in this section,** for review:
 
-1. **A picture build is a job,** like a scan, not one long request: it takes about a minute, the person sees its stages, and a dropped connection doesn't lose it.
-2. **A picture build isn't an `Idea`.** It has no theme or difficulty, it belongs to the account rather than to a scan, and its parts aren't checked until the person picks a scan, so it gets shapes of its own.
-3. **`check` is worked out on each read,** against the scan as it is then, so a correction to the scan shows straight away and nothing has to be kept in step.
-4. **The quota has its own route,** so the web app can say what's left before the person picks a picture, rather than after an upload is refused.
-5. **A preview is a status on the idea, read by polling the routes the client already uses,** not a job of its own: the ideas list already reads `GET /scans/{scanId}`, and the idea's page `GET /scans/{scanId}/ideas/{ideaId}`.
-6. **A built preview replaces the idea's steps, summary, `used` and `missing`,** so the words and the picture always describe the same build.
+1. **A building idea is in the set, not a job of its own,** read by polling the route the ideas list already uses, `GET /scans/{scanId}`. The scan already owns its ideas, and a set's builds live and die with it.
+2. **`building` is a list beside `items`, not a status on `Idea`,** so an `Idea` is always complete: a client never sees an idea without a title or steps.
+3. **No limit or failure is an error:** the set falls back to ideas written as text, so a scan always gets ideas.

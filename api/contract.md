@@ -754,7 +754,7 @@ Every error answers with one body:
 | `photo_type` | 415 | The photo isn't JPEG, PNG or WebP, or can't be decoded. | The client checks first (`PhotoProblem` `type`). |
 | `too_dark` | in a failed job | The photo is too dark to read. | `ApiError("too_dark")` |
 | `too_blurry` | in a failed job | The photo is too blurry to read. | `ApiError("too_blurry")` |
-| `timeout` | 504, or in a failed job | The scan or the ideas ran past their deadline. | `ApiError("network")`, until legoin-web has a `timeout` reason |
+| `timeout` | 504, or in a failed job | The scan or the ideas ran past their deadline. | `ApiError("timeout")` |
 | `unavailable` | 503 | A model or the LLM provider is down or overloaded. It may send `Retry-After`. | `ApiError("network")` |
 | `internal` | 500 | Anything else. | `ApiError("network")` |
 
@@ -769,7 +769,8 @@ A failed scan job isn't an HTTP error. The poll that reads it worked, so it answ
 | `no_pieces` | A failed scan job with `no_pieces`, or `409 no_pieces` from a request for ideas. |
 | `too_dark` | A failed scan job with `too_dark`. |
 | `too_blurry` | A failed scan job with `too_blurry`. |
-| `network` | Never sent by the backend. The client uses it when it gets no usable answer: `fetch` rejects (offline, DNS, CORS), the status is 5xx, the code is `timeout`, `unavailable` or `internal`, the body can't be read, or polling gives up. |
+| `timeout` | A failed scan job with `timeout`, or `504 timeout` from a request for ideas. The client's own give-ups are `network`. |
+| `network` | Never sent by the backend. The client uses it when it gets no usable answer: `fetch` rejects (offline, DNS, CORS), the status is 5xx with any other code, the code is `unavailable` or `internal`, the body can't be read, or polling gives up. |
 
 The models decide which photo problem to report. The mock fails photos after the `detecting` stage, so `onStage` hears `detecting` before a photo failure; the real backend may fail at any stage.
 
@@ -837,7 +838,7 @@ The PRD's `cek_inventori` check splits what a build needs into parts the person 
 - The mock's `preview` URLs are paths on the web app, to its copy of the library's pictures and models. The API's are URLs the backend serves.
 - The mock writes ideas for a scan with no pieces, every part missing. The API answers `409 no_pieces`.
 - For a scan that's gone, the mock's `updateDetections` and `getIdeas` reject with a plain `Error`. The API answers `404 not_found`; the screens treat both as a failure.
-- The mock never times out. The API can answer `timeout`, which `ScanFailure` doesn't have yet.
+- The mock times out only when asked to, with `?mock=fail-timeout`. The API answers `timeout` whenever a scan or a request for ideas runs past its deadline.
 
 ## 10. Open questions
 
@@ -884,7 +885,7 @@ The mock has grown since the issue was written, and the contract follows the cod
 - Color ids are the app's ids, with Rebrickable ids in the catalogue (decision 5).
 - The issue's `InventoryLine` is `PartCount`, and the inventory isn't sent: it's derived from the detections.
 - New since the issue: the `restore` change for undo, `exclude` for "Try other ideas", the latest set kept on the scan with `lastTheme`, and `GET /scans/{scanId}/ideas/{ideaId}`.
-- The issue lists `timeout` as a failure. The contract has it as an error code; legoin-web's `ScanFailure` doesn't have it yet, so the client reports it as `network` for now.
+- The issue lists `timeout` as a failure. The contract has it as an error code, and legoin-web's `ScanFailure` has it too since legoin-web#63, with its own message.
 
 ## 13. Picture builds
 

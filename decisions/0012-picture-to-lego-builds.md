@@ -179,6 +179,10 @@ It ran on 2026-11-25 on the project's server (AMD EPYC, 16 cores, no GPU, Ubuntu
   - After that run, `finish` was changed to need a render seen since the last change, as BrickWright advises its agents.
   - The table's other runs all ran with that rule.
 - **Total spent:** $0.97 for 35 API calls, 11 builds.
+- **After the spike,** one live job ran through legoin-api's implementation: the real routes, the worker process and the dispatcher, on the project's server, with a $1.00 daily budget for the test.
+  - The house picture, in `id`, went `queued` → `designing` → `rendering` → `done` in 72 s, for 3 calls and $0.227.
+  - It came back as 57 pieces with 8 Indonesian steps.
+  - The stored spending matched the worker's log.
 
 | Model, effort | Picture | Valid | Pieces | API calls | Input + cache read + cache write / output tokens | Cost | Wall time |
 | --- | --- | --- | --- | --- | --- | --- | --- |

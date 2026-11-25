@@ -1,11 +1,13 @@
 # ADR-0012: Picture-to-LEGO Builds: Claude Places Pieces Through Tools, in a Budgeted Background Job
 
-- Status: Accepted
+- Status: Superseded by [ADR-0013](0013-ideas-built-from-the-scan.md)
 - Date: 2026-11-25
 - Deciders: Legoin team
 - Issue: #25
 
 ## Context and Problem
+
+*Superseded by [ADR-0013](0013-ideas-built-from-the-scan.md): builds now continue the scan, from its photo and pieces, and the page and the previews below are gone. The engine (the tools, the checks, the worker and the budget) carries on there.*
 
 *Updated with a scope addition: previews of ideas, in "Idea previews" below.*
 

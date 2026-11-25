@@ -1,6 +1,6 @@
 # ADR-0008: Backend in Python with FastAPI, Models from a Pinned legoin-ml Release, SQLite and Local Photos
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-25
 - Deciders: Legoin team
 - Issue: #15

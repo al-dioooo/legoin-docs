@@ -1,6 +1,6 @@
 # ADR-0012: Picture-to-LEGO Builds: Claude Places Pieces Through Tools, in a Budgeted Background Job
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-25
 - Deciders: Legoin team
 - Issue: #25

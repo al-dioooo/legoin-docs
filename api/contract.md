@@ -889,7 +889,7 @@ The mock has grown since the issue was written, and the contract follows the cod
 
 ## 13. Picture builds
 
-- Status: **Proposed**, with [ADR-0012](../decisions/0012-picture-to-lego-builds.md), in #25. Until it's accepted, this section is the only part of the contract that changes, so the sections above keep their numbers.
+- Status: **Accepted**, with [ADR-0012](../decisions/0012-picture-to-lego-builds.md), in #25.
 
 A person uploads a picture, such as a car, an animal or a house, and the agent designs a LEGO build of it from [the catalogue](#the-catalogue). The backend checks every build with BrickLayer and renders it. The person gets a picture of the build, an LDraw model, the parts, the steps, and, against a scan they choose, what they own and what they're missing.
 

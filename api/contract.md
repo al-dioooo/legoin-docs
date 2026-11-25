@@ -41,7 +41,7 @@ A visit goes: upload a photo and follow the scan's stages, check and correct the
 
 ## 3. Shapes
 
-Written as TypeScript because `domain.ts` is; the backend can mirror them with Pydantic models. Everything here is in `domain.ts` or `bricks.ts` with the same names and fields, except `ScanJob` and `ApiErrorBody`, which only exist on the wire.
+Written as TypeScript because `domain.ts` is; the backend can mirror them with Pydantic models. Everything here is in `domain.ts` or `bricks.ts` with the same names and fields, except `ScanJob` and `ApiErrorBody`, which only exist on the wire. `Idea`'s `buildId` and `preview`, and `Preview`, were added after `a05024d` ([ADR-0010](../decisions/0010-library-of-checked-builds.md)).
 
 ```ts
 type Scan = {
@@ -85,7 +85,12 @@ type Idea = {
   steps: string[];
   used: PartCount[]; // parts the person owns that the build uses
   missing: PartCount[]; // parts the build needs that the person doesn't have
+  buildId?: string; // the checked build this idea is, from the backend's library
+  preview?: Preview; // pictures of that build; sent with buildId
 };
+
+/** A checked build's picture and LDraw model, as absolute URLs. */
+type Preview = { image: string; model: string };
 
 type IdeaSet = { theme: Theme; locale: Locale; items: Idea[] };
 
@@ -138,6 +143,17 @@ The inventory isn't sent. It's the scan's detections grouped by part and color, 
 | `surprise` | One idea from each theme. It only appears in a request and in `IdeaSet.theme`; each idea in the set has its own theme, one of the three above. |
 
 Difficulty is `easy`, `medium` or `hard`.
+
+### Preview
+
+Some ideas are a checked build from the backend's library: built from real parts, checked for collisions, floating parts and connectivity, and rendered ahead of time ([ADR-0010](../decisions/0010-library-of-checked-builds.md)). Every template idea is one, and the agent may pick one when the person's pieces fit it. Those ideas carry `buildId` and `preview`; an idea the agent wrote itself has neither.
+
+- **`buildId`** is the build's id in the library, e.g. `race-car`. Like other ids, the client never parses it. The idea's title, summary, steps and parts are that build's, in the idea's language. `used` and `missing` still come from `cek_inventori`.
+- **`preview.image`** is an absolute URL of a picture of the finished build: an isometric view, a square WebP of 640 × 640 pixels on a transparent background. It loads in a plain `<img>`, with no header.
+- **`preview.model`** is an absolute URL of the build as an LDraw file (`.ldr`), served as a download. It names parts from the LDraw.org Parts Library and doesn't include them.
+- **Both URLs are public and versioned.** They carry no device id, and a URL never changes what it serves, so clients and proxies may cache it for good. Where the backend serves them is its choice.
+- **`buildId` and `preview` come together:** an idea has both or neither.
+- **The client** writes the picture's alt text itself, from the title, in the page's language. Wherever it shows pictures, it credits the LDraw.org Parts Library, BrickLayer and BrickWright, and the LEGO trademark line, as ADR-0010 lists.
 
 ### The catalogue
 
@@ -458,6 +474,7 @@ HTTP/1.1 204 No Content
 What the backend does:
 
 - **Writes three ideas** in `locale`, each checked against the scan's inventory as it is now (see [Rules](#7-rules)). For `surprise`, it's one idea from each of `vehicles`, `animals` and `buildings`.
+- **Adds a picture** to each idea that's a checked build from its library: `buildId` and `preview` (see [Preview](#preview)).
 - **Keeps them.** The set becomes the scan's `ideas`, replacing the one before, and `theme` becomes its `lastTheme`.
 - **Avoids excluded ideas.** The backend remembers every idea it has written for a scan, not only the latest set, so it can tell the agent what was already shown. Ids it doesn't know are ignored.
 - **Asks again every time.** Every call is a wait and gives different ideas. To show the kept ones, read `ideas` from `GET /scans/{scanId}` instead.
@@ -466,7 +483,7 @@ A request that fails changes nothing: the scan keeps its earlier `ideas` and `la
 
 Idea ids are unique within a scan and never reused for a different idea, so an old link to an idea that has since been replaced answers `404` rather than showing another idea.
 
-This request comes after the correction above, in Indonesian, with three ideas already shown. Each idea is checked against the scan's four pieces: a red brick 2×4, a green slope 2×2, a black brick 2×2 and a blue plate 1×2.
+This request comes after the correction above, in Indonesian, with three ideas already shown. Each idea is checked against the scan's four pieces: a red brick 2×4, a green slope 2×2, a black brick 2×2 and a blue plate 1×2. The first idea is the library's race car, so it has a picture; the other two were written by the agent.
 
 ```http
 POST /v1/scans/scn_4kd2p9/ideas HTTP/1.1
@@ -488,9 +505,9 @@ Content-Type: application/json
       "title": "Mobil balap kecil",
       "summary": "Badan merah, kap hijau, lampu kuning.",
       "steps": [
-        "Pasang brick 2×4 merah di atas plate 2×4 hitam sebagai badan.",
-        "Taruh slope 2×2 hijau di depan sebagai kap mesin.",
-        "Tambahkan brick 2×2 hitam di belakang dan dua round 1×1 kuning sebagai lampu."
+        "Pasang brick 2×4 merah di atas plate 2×4 hitam, mundur satu stud, supaya baris depan plate kelihatan.",
+        "Taruh slope 2×2 hijau di depan brick merah sebagai kap mesin, dan brick 2×2 hitam di belakangnya sebagai kabin.",
+        "Pasang dua round 1×1 kuning di baris depan plate sebagai lampu depan."
       ],
       "used": [
         { "part": "brick-2x2", "color": "black", "quantity": 1 },
@@ -500,7 +517,12 @@ Content-Type: application/json
       "missing": [
         { "part": "round-1x1", "color": "yellow", "quantity": 2 },
         { "part": "plate-2x4", "color": "black", "quantity": 1 }
-      ]
+      ],
+      "buildId": "race-car",
+      "preview": {
+        "image": "https://api.legoin.example/v1/builds/race-car/preview.webp?v=32a32212e618",
+        "model": "https://api.legoin.example/v1/builds/race-car/model.ldr?v=378de85baa5d"
+      }
     },
     {
       "id": "idea_l8k3",
@@ -666,7 +688,7 @@ The PRD's `cek_inventori` check splits what a build needs into parts the person 
 
 - the four demo scans every new visitor starts with, and `resetMockData`;
 - the made-up detections for a photo it doesn't know (`detectionsForPhoto`);
-- the idea templates and their order: once unseen ideas run out, the mock offers the ones shown longest ago again, while the backend simply avoids `exclude`;
+- the idea templates and their order: once unseen ideas run out, the mock offers the ones shown longest ago again, while the backend simply avoids `exclude`. The templates' text and parts are the backend's, which match its checked builds;
 - the fake waits: 900 ms per stage, 1200 ms for ideas and 150 ms for reads and saves;
 - the `localStorage` key `legoin.mock.scans.v1`.
 
@@ -680,6 +702,7 @@ The PRD's `cek_inventori` check splits what a build needs into parts the person 
 **Where the mock and the contract differ:**
 
 - The mock's `photo.src` is a data URL or a path on the web app. The API's is a URL the backend serves.
+- The mock's `preview` URLs are paths on the web app, to its copy of the library's pictures and models. The API's are URLs the backend serves.
 - The mock writes ideas for a scan with no pieces, every part missing. The API answers `409 no_pieces`.
 - For a scan that's gone, the mock's `updateDetections` and `getIdeas` reject with a plain `Error`. The API answers `404 not_found`; the screens treat both as a failure.
 - The mock never times out. The API can answer `timeout`, which `ScanFailure` doesn't have yet.
@@ -716,6 +739,7 @@ Technical choices this draft makes so the contract is complete. Each can be chan
 12. **The backend runs `cek_inventori` itself on the final parts list,** so the guarantee doesn't depend on the model calling the tool correctly.
 13. **Times:** the 15-second target applies to photos of up to 32 pieces, with a budget of about 5 seconds for the scan and 10 for ideas; jobs and requests for ideas fail at 30 seconds; the client gives up at 45 seconds for a scan and 40 for ideas, and polls every 500 ms.
 14. **Limits:** an `add` change adds 1 to 20 pieces, like the web app's add-piece form (`MAX_ADD_QUANTITY`), and `exclude` holds at most 50 ids.
+15. **Pictures are two optional fields on `Idea`, `buildId` and `preview`,** sent only for checked builds from the backend's library ([ADR-0010](../decisions/0010-library-of-checked-builds.md)). Clients ignore fields they don't know, so this needs no new version. The URLs are absolute, like `photo.src`, and versioned, so they can be cached for good.
 
 ## 11. Changes from issue #7
 

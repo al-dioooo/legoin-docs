@@ -1,6 +1,6 @@
 # ADR-0008: Backend in Python with FastAPI, Models from a Pinned legoin-ml Release, SQLite and Local Photos
 
-- Status: Accepted
+- Status: Accepted, partly superseded by [ADR-0011](0011-accounts-with-email-and-password.md): scans belong to accounts, not devices
 - Date: 2026-11-25
 - Deciders: Legoin team
 - Issue: #15

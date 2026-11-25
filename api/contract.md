@@ -885,3 +885,264 @@ The mock has grown since the issue was written, and the contract follows the cod
 - The issue's `InventoryLine` is `PartCount`, and the inventory isn't sent: it's derived from the detections.
 - New since the issue: the `restore` change for undo, `exclude` for "Try other ideas", the latest set kept on the scan with `lastTheme`, and `GET /scans/{scanId}/ideas/{ideaId}`.
 - The issue lists `timeout` as a failure. The contract has it as an error code; legoin-web's `ScanFailure` doesn't have it yet, so the client reports it as `network` for now.
+
+## 13. Picture builds
+
+- Status: **Proposed**, with [ADR-0012](../decisions/0012-picture-to-lego-builds.md), in #25. Until it's accepted, this section is the only part of the contract that changes, so the sections above keep their numbers.
+
+A person uploads a picture, such as a car, an animal or a house, and the agent designs a LEGO build of it from [the catalogue](#the-catalogue). The backend checks every build with BrickLayer and renders it. The person gets a picture of the build, an LDraw model, the parts, the steps, and, against a scan they choose, what they own and what they're missing.
+
+A build takes about a minute and costs the backend money, so it runs as a job, like a scan, and it's limited per account and per day. Every route here needs a session ([Accounts](#4-accounts)), except the file URLs.
+
+| Data layer (`src/lib/api`) | Endpoint | Answer |
+| --- | --- | --- |
+| `getPictureQuota()` | [`GET /picture-quota`](#get-picture-quota) | `PictureQuota` |
+| `createPictureBuild(picture, locale, { onStage, signal })` | [`POST /picture-jobs`](#post-picture-jobs), then [`GET /picture-jobs/{jobId}`](#get-picture-jobsjobid) until it ends. [`DELETE /picture-jobs/{jobId}`](#delete-picture-jobsjobid) cancels. | A `PictureJob` that ends with a `PictureBuild` |
+| `listPictureBuilds()` | [`GET /picture-builds`](#get-picture-builds) | `{ builds: PictureBuild[] }`, newest first |
+| `getPictureBuild(id, { scanId })` | [`GET /picture-builds/{buildId}`](#get-picture-buildsbuildid) | `PictureBuild`, or 404, which the client turns into `null` |
+| `deletePictureBuild(id)` | [`DELETE /picture-builds/{buildId}`](#delete-picture-buildsbuildid) | 204 |
+
+### Picture build shapes
+
+```ts
+type PictureStage = "queued" | "designing" | "checking" | "rendering";
+
+type PictureJob =
+  | { id: string; status: "running"; stage: PictureStage }
+  | { id: string; status: "done"; build: PictureBuild }
+  | { id: string; status: "failed"; error: ApiErrorBody["error"] };
+
+type PictureBuild = {
+  id: string;
+  createdAt: string; // ISO 8601, UTC: when the build was saved
+  locale: Locale; // the language its title, summary and steps are written in
+  title: string;
+  summary: string;
+  steps: string[];
+  parts: PartCount[]; // every part the build needs, sorted like an inventory
+  picture: Photo; // the uploaded picture, as kept
+  preview: Preview; // the rendered build and its LDraw model
+  plain?: true; // the title, summary and steps are the backend's plain ones
+  check?: PictureCheck; // only when asked for with ?scanId=
+};
+
+type PictureCheck = {
+  scanId: string;
+  used: PartCount[]; // parts the person owns that the build uses
+  missing: PartCount[]; // parts the build needs that the person doesn't have
+};
+
+type PictureQuota = {
+  available: boolean; // whether POST /picture-jobs would take a picture now
+  reason?: "off" | "limit" | "budget"; // why not, when it wouldn't
+  used: number; // picture jobs this account started today (UTC)
+  limit: number; // how many it may start a day
+  resetsAt: string; // ISO 8601, UTC: the next midnight, when `used` goes back to 0
+};
+```
+
+- **`parts`** are only catalogue parts and colors, at most 60 pieces in all.
+- **`picture`** is the uploaded picture, upright, re-encoded as JPEG with its EXIF metadata removed. `src` is an absolute URL with an unguessable name, as `photo.src` is ([open question 3](#10-open-questions)).
+- **`preview.image`** is an isometric picture of the build, a square WebP of 640 × 640 pixels on a transparent background, from the same angle as the library's. **`preview.model`** is the build as an LDraw file (`.ldr`), served as a download, with the same credit lines in its header as the library's. Both are absolute URLs with unguessable names, which load with no header for as long as the build exists. The client credits them as it does [library pictures](#preview).
+- **`plain`** is there when a limit ended the job after the agent had made a valid build but before it wrote its own text: the build stands, its title and summary are plain, and its steps list the pieces level by level, from the bottom up. Otherwise it's left out.
+- **`check`** is [`cek_inventori`](#every-idea-passes-cek_inventori) of `parts` against the scan's inventory at the time of the request, with the same rules as an idea's `used` and `missing`.
+
+### What every picture build is
+
+- **Physically valid,** as BrickLayer checks it: no two pieces collide, nothing floats, and every piece joins one connected assembly. A build that fails is never saved.
+- **Designed with tools, never with code.** The agent places and removes catalogue pieces on a stud grid, asks for the checks and for renders, and finishes. The backend applies each call itself. Nothing the model writes is run.
+- **Written in the requested language,** with the rules for [ideas](#ideas-come-in-the-requested-language-and-are-never-translated): Indonesian color names and the hobby's English part names in `id`. A build keeps the language it was written in.
+
+**What's sent to the model provider:** the picture and the language. Never the account's id or email. The web app says so before the person uploads.
+
+### `GET /picture-quota`
+
+`getPictureQuota()`: whether this account can start a picture job now, and how many it has left today. The web app reads it before showing the upload.
+
+```http
+GET /v1/picture-quota HTTP/1.1
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
+```
+
+```json
+{ "available": true, "used": 1, "limit": 2, "resetsAt": "2026-11-26T00:00:00.000Z" }
+```
+
+`reason` says why `available` is `false`:
+
+| `reason` | When |
+| --- | --- |
+| `off` | Picture builds aren't turned on on this backend. |
+| `limit` | This account has started `limit` jobs today. |
+| `budget` | The backend has spent its budget for the day. |
+
+A full queue isn't a reason here: it passes in seconds, and `POST /picture-jobs` answers it with `Retry-After`.
+
+### `POST /picture-jobs`
+
+Uploads one picture as `multipart/form-data`, with two parts:
+
+- `picture`: JPEG, PNG or WebP, at most 10 MB, with the same checks as a scan's photo;
+- `locale`: `en` or `id`, the language to write the build's text in.
+
+It answers `202` with a job waiting for its turn:
+
+```http
+POST /v1/picture-jobs HTTP/1.1
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
+Content-Type: multipart/form-data; boundary=legoin
+
+--legoin
+Content-Disposition: form-data; name="picture"; filename="car.jpg"
+Content-Type: image/jpeg
+
+<JPEG bytes>
+--legoin
+Content-Disposition: form-data; name="locale"
+
+en
+--legoin--
+```
+
+```json
+{ "id": "pjob_Q3v8tL2x", "status": "running", "stage": "queued" }
+```
+
+A job that's taken counts toward today's `limit` straight away. It's given back if the job then fails with `unavailable`, `internal` or `picture_budget`, or is cancelled before it leaves `queued`.
+
+Errors:
+
+- `400 invalid_request` when there's no `picture` part or `locale` isn't `en` or `id`;
+- `413 photo_too_large` and `415 photo_type`, as for a scan's photo;
+- `429 picture_limit` when this account has started `limit` jobs today, with `Retry-After` until midnight UTC;
+- `503 picture_budget` when the backend has spent its budget for the day, with `Retry-After` until midnight UTC;
+- `503 unavailable` when picture builds are off, with no `Retry-After`, or when the queue is full, with `Retry-After` in seconds.
+
+### `GET /picture-jobs/{jobId}`
+
+The job as it is now, as for a [scan job](#get-scan-jobsjobid). A running job reports its stage:
+
+| Stage | What the backend is doing |
+| --- | --- |
+| `queued` | Waiting for the job before it to finish. One job runs at a time. |
+| `designing` | The agent is designing the build. Most of the minute goes here. |
+| `checking` | Checking the finished build once more, and counting its parts. |
+| `rendering` | Rendering its picture and writing its LDraw model. |
+
+The stage only moves forward. A finished job carries the saved build, which `GET /picture-builds` now lists too:
+
+```jsonc
+{
+  "id": "pjob_Q3v8tL2x",
+  "status": "done",
+  "build": {
+    "id": "pic_8KfD2mQx1Zr",
+    "createdAt": "2026-11-25T08:41:05.000Z",
+    "locale": "en",
+    "title": "Little Red Car",
+    "summary": "A red car with four black wheels, a sloped cabin with blue side windows, yellow headlights at the front and orange taillights at the back.",
+    "steps": [
+      "Stand four black round 1×1 bricks as wheels at the corners, 2 studs in from each end.",
+      "Lay five black 2×4 plates on top to make a chassis 10 studs long and 4 studs wide."
+      // …
+    ],
+    "parts": [
+      { "part": "brick-2x4", "color": "red", "quantity": 9 },
+      { "part": "plate-2x4", "color": "black", "quantity": 5 }
+      // …
+    ],
+    "picture": { "src": "https://api.legoin.example/v1/picture-files/n4Qk0vXb7cT2mZr9LwYe1A.jpg", "width": 900, "height": 600 },
+    "preview": {
+      "image": "https://api.legoin.example/v1/picture-files/Hq7bW3pZ0sKd5yRf2LmNcQ.webp",
+      "model": "https://api.legoin.example/v1/picture-files/Vt8cX1nB6qLs4wJe9KdRaQ.ldr"
+    }
+  }
+}
+```
+
+A failed job carries the error, and nothing was saved:
+
+```json
+{
+  "id": "pjob_Q3v8tL2x",
+  "status": "failed",
+  "error": { "code": "picture_unusable", "message": "There's no clear subject in the picture to build." }
+}
+```
+
+| Code in a failed job | When |
+| --- | --- |
+| `picture_unusable` | The agent found no clear subject to build: a blank, abstract, very dark or blurry picture, or only text. |
+| `picture_refused` | The model declined the picture, or the agent found it unsuitable for a family building app. |
+| `no_valid_build` | A limit on the job's cost, model calls or time ended it before the agent made a valid build. |
+| `picture_budget` | The backend's daily budget ran out before the job could start. |
+| `timeout` | The job ran past its deadline. |
+| `unavailable` | The model provider couldn't be reached or was overloaded. |
+| `internal` | Anything else. |
+
+The rules of a scan job hold: a failed job still answers `200`, an ended job is kept for at least 10 minutes, and only an unknown job is `404 not_found`.
+
+### `DELETE /picture-jobs/{jobId}`
+
+Cancels the job and answers `204` with no body, as for a [scan job](#delete-scan-jobsjobid). The backend stops the job at once and saves nothing; if the job had already finished, it deletes the build the job saved. An unknown or forgotten job also answers `204`. What the job spent before the cancel still counts toward the daily budget.
+
+### `GET /picture-builds`
+
+`listPictureBuilds()`: this account's picture builds, newest first by `createdAt`, wrapped like [`GET /scans`](#get-scans). None answers `{ "builds": [] }`. The builds carry no `check`.
+
+### `GET /picture-builds/{buildId}`
+
+`getPictureBuild(id, { scanId })`: one build. With `?scanId=`, it adds `check` against that scan, as the scan is now:
+
+```http
+GET /v1/picture-builds/pic_8KfD2mQx1Zr?scanId=scn_4kd2p9 HTTP/1.1
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
+```
+
+```jsonc
+{
+  "id": "pic_8KfD2mQx1Zr",
+  // …the rest of the build, as above
+  "check": {
+    "scanId": "scn_4kd2p9",
+    "used": [{ "part": "brick-2x4", "color": "red", "quantity": 1 }],
+    "missing": [
+      { "part": "brick-2x4", "color": "red", "quantity": 8 },
+      { "part": "plate-2x4", "color": "black", "quantity": 5 }
+      // …
+    ]
+  }
+}
+```
+
+An unknown build, or another account's, answers `404 not_found`, and the client returns `null`. A `scanId` that isn't one of this account's scans leaves `check` out, since the build itself is there; the client compares `check.scanId` with the scan it asked about.
+
+### `DELETE /picture-builds/{buildId}`
+
+`deletePictureBuild(id)`: deletes the build with its picture, preview and model, and answers `204` with no body. An unknown build also answers `204`.
+
+### Errors and limits for picture builds
+
+These codes are new, and only picture builds use them:
+
+| Code | Status | When | In the web app |
+| --- | --- | --- | --- |
+| `picture_limit` | 429 | This account has started its picture jobs for today. Sent with `Retry-After`. | A message with when it resets, from `GET /picture-quota` |
+| `picture_budget` | 503, or in a failed job | The backend has spent its budget for the day. Sent with `Retry-After`. | A message to try again tomorrow |
+| `picture_unusable` | in a failed job | No clear subject to build. | A message to try a clearer picture of one thing |
+| `picture_refused` | in a failed job | The model declined the picture, or the agent found it unsuitable. | A message to try another picture |
+| `no_valid_build` | in a failed job | A limit ended the job before a valid build. | A message to try again, or a simpler picture |
+
+| What | Deadline | Then |
+| --- | --- | --- |
+| A picture job, from leaving `queued` | 6 minutes | The job ends `failed` with `timeout`. |
+| The client, polling a picture job | Every second; 10 minutes with no ending, or 3 polls in a row with no answer | It sends `DELETE /picture-jobs/{jobId}` and rejects with `network`. |
+
+The backend's own limits (the daily budget, the jobs per account a day, the cost and time a job may take, and the queue's length) are its configuration, which [ADR-0012](../decisions/0012-picture-to-lego-builds.md) sets out. The client learns the ones it needs from `GET /picture-quota` and `Retry-After`.
+
+**Decisions in this section,** for review:
+
+1. **A picture build is a job,** like a scan, not one long request: it takes about a minute, the person sees its stages, and a dropped connection doesn't lose it.
+2. **A picture build isn't an `Idea`.** It has no theme or difficulty, it belongs to the account rather than to a scan, and its parts aren't checked until the person picks a scan, so it gets shapes of its own.
+3. **`check` is worked out on each read,** against the scan as it is then, so a correction to the scan shows straight away and nothing has to be kept in step.
+4. **The quota has its own route,** so the web app can say what's left before the person picks a picture, rather than after an upload is refused.

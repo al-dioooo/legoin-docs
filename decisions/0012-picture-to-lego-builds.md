@@ -7,6 +7,8 @@
 
 ## Context and Problem
 
+*Updated with a scope addition: previews of ideas, in "Idea previews" below.*
+
 A teammate asked about [BrickWright](https://github.com/AvaLovelace1/brickwright)'s image-to-LEGO: an agent turns a text or image prompt into a physically valid brick build. The maintainer now wants it in Legoin. A person uploads a picture, such as a car, an animal or a house. Claude designs a LEGO build of it from the app's catalogue, and the person gets a rendered picture, an `.ldr` model, a parts list, steps, and what they own or are missing against one of their scans.
 
 [ADR-0010](0010-library-of-checked-builds.md) turned down live BrickWright generation for ideas. It takes minutes and many model calls per build, it needs the LDraw parts library and a renderer at runtime, and BrickWright's agent writes Python that has to run on the server. Those are still the risks here:
@@ -223,6 +225,99 @@ It ran on 2026-11-25 on the project's server (AMD EPYC, 16 cores, no GPU, Ubuntu
 - **A job's cap of $0.50** is over three times the median, so a build that needs repairs still fits.
 - **The 300 s design limit** is six times the median.
 
+### Idea previews
+
+A scope addition from the maintainer: every build idea should show a picture of what it looks like, made with this engine, not only the ideas that are library picks ([ADR-0010](0010-library-of-checked-builds.md)). legoin-api#36 and legoin-web#78 implement it.
+
+**What happens:**
+
+- `POST /scans/{scanId}/ideas` answers as before, around ADR-0009's 10 seconds. Library ideas keep their picture.
+- **After it answers,** each idea Claude wrote itself gets a preview job, in the same queue and worker as picture builds:
+  - Claude gets the idea as text: its title, summary, steps and listed parts. It builds it with the same tools, system prompt and render-before-finish rule.
+  - `place_pieces` refuses any part and color pair the idea doesn't list.
+  - The build may use more or fewer of each, up to twice the pieces the idea lists, and 20 at most.
+  - It keeps the idea's title, and writes a summary and steps that match the build.
+- **A valid build becomes the idea:**
+  - its `buildId` (`gen_…`) and `preview`;
+  - its steps and summary;
+  - `used` and `missing` from `cek_inventori` of the build's own parts, against the scan as it is then.
+
+  The text and the picture never disagree.
+- **The idea carries a `previewStatus`:** `pending`, `on_open`, `ready` or `unavailable` (contract section 13, "Idea previews"). The web app shows a placeholder while it's `pending`, polls the routes it already reads, and swaps the picture in with the click-in.
+- **Stale sets are dropped.** A preview belongs to its set:
+  - asking for ideas again, or a correction that drops the ideas, cancels the old set's queued and running previews and deletes their builds;
+  - deleting the scan deletes them too;
+  - a preview that finishes for an idea no longer in the scan's set is thrown away.
+
+  "Try other ideas" never stacks up work.
+- **It never blocks or fails the ideas request.** A limit, the budget or a failed build leaves the idea text-only, as `unavailable`.
+
+**The configuration:**
+
+| Variable | Default | What it sets |
+| --- | --- | --- |
+| `LEGOIN_IDEA_PREVIEWS` | `all` | `all` builds the three previews after the ideas are answered; `on_open` only when someone opens that idea's page; `off` makes none |
+| `LEGOIN_IDEA_PREVIEW_MODEL`, `LEGOIN_IDEA_PREVIEW_EFFORT` | `claude-opus-5-5`, `medium` | The model and effort |
+| `LEGOIN_IDEA_PREVIEW_DAILY_LIMIT` | `9` | Previews each account may start a day: three sets with `all` |
+| `LEGOIN_IDEA_PREVIEW_COST_USD` | `0.25` | Dollars one preview may spend; it reserves this much of the daily budget while it waits or runs |
+| `LEGOIN_IDEA_PREVIEW_SECONDS`, `LEGOIN_IDEA_PREVIEW_CALLS` | `120`, `10` | One preview's time and calls |
+
+**Budgets and prerequisites:**
+
+- Previews draw on the same `LEGOIN_PICTURE_DAILY_BUDGET_USD` as picture builds. Each reserves its cap until it ends, and each call is checked against its worst case, as for picture builds.
+- A preview's calls ask for at most 4,000 output tokens, since its turns are short. A per-preview cap of $0.25 then still allows three to four calls in the worst case.
+- Previews need what picture builds need (the key, the `picture` extra, the LDraw parts library) and ideas from Claude. They don't need `LEGOIN_PICTURE_BUILDS` to be on.
+
+**Priority: picture builds first.** The worker runs one job at a time.
+
+- A picture build was asked for on purpose, counts against a small quota, and has someone watching its progress.
+- A preview is extra on an idea that's already useful as text, and it's short (about 15 s).
+- So queued picture builds run before queued previews, and previews run in the order they were asked for.
+- A running preview isn't stopped for a picture build. Previews are short, so a picture build waits about 15 s more at worst.
+
+**The default is `all`.** The spike below measured a median preview at $0.036 and 14 s, about a tenth of the decision rule's $0.35 and 2 minutes.
+
+- **Cost:** a whole set of three cost $0.12, less than one picture build.
+- **Wait:** it arrives in about 45 s, while the person is still reading the cards.
+- **`on_open`** would cost about a third as much, but the cards stay text-only, and the person waits about 15 s on each idea's page instead.
+- **The daily budget** bounds both modes, and `on_open` is one variable away for a tighter one.
+
+#### The spike for idea previews
+
+It ran on 2026-11-25, on the same server, after the picture spike and before this was built.
+
+- **The ideas:** legoin-api ran with the v0.2.0 models and Claude ideas (Sonnet 5.5 at `low`, the defaults), and scanned the detector's 31-piece test photo (`photos_31_IMG_20201127_192001.jpg`). `surprise` in `en` gave three ideas Claude wrote itself, each 4 or 5 pieces, with no library pick:
+  - "Blue buggy";
+  - "Brown bird";
+  - "Stone hut".
+
+  That request took 9.9 s and $0.017.
+- **The previews:** built in-process with the agent above, at `medium`, with a $0.40 cap each.
+- **Timing:** the times leave out the final 640 px render (about 2 s) and a worker's start-up (about 2 s).
+- **The spend guard:** the Sonnet run went through the picture spike's spend guard. The Opus run didn't: the maintainer asked for no spend guard on it, and each preview's own cap bounded it.
+- **Total:** the spikes spent about $1.39 in all, including the live picture job above.
+
+| Model, `medium` | Idea | Listed pieces | Built pieces | Valid | API calls | Input + cache read + cache write / output tokens | Cost | Time | Looks like the idea |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Sonnet 5.5 | Blue buggy | 5 | 5 | yes | 2 | 6 + 4,795 + 5,976 / 788 | $0.023 | 11 s | partly: red rounds on top, not wheels |
+| Sonnet 5.5 | Brown bird | 4 | 4 | yes | 2 | 6 + 9,212 + 1,332 / 625 | $0.011 | 7 s | yes, blocky |
+| Sonnet 5.5 | Stone hut | 5 | 5 | yes | 3 | 8 + 15,035 + 1,646 / 878 | $0.014 | 12 s | partly: half a roof |
+| **Sonnet 5.5, median / set of 3** | | | | 3 of 3 | 2 | | **$0.014** / $0.048 | **11 s** / 30 s | |
+| Opus 5.5 | Blue buggy | 5 | 7 | yes | 2 | 6 + 4,795 + 6,235 / 1,020 | $0.053 | 14 s | yes: four red wheels under the body |
+| Opus 5.5 | Brown bird | 4 | 4 | yes | 2 | 6 + 9,212 + 2,174 / 1,094 | $0.035 | 15 s | yes, blocky |
+| Opus 5.5 | Stone hut | 5 | 8 | yes | 2 | 6 + 9,244 + 2,544 / 1,097 | $0.036 | 14 s | yes: walls, two-slope roof, chimney |
+| **Opus 5.5, median / set of 3** | | | | 3 of 3 | 2 | | **$0.036** / $0.124 | **14 s** / 42 s | |
+
+**Which model:** Opus 5.5 made the more faithful previews.
+
+- **Buggy:** Opus stood the red rounds under the body as four wheels; Sonnet put them on top.
+- **Hut:** Opus built walls under a two-slope roof; Sonnet's slope covers half.
+- **Bird:** a blocky body with a head and a beak, the same from both.
+
+Every preview was valid and used every pair its idea listed. Opus added pieces where the idea needed them (two more wheels, two more walls and a second slope), which is what the source-of-truth rule is for.
+
+**The decision rule:** build `all` or `on_open` only if the better model's median preview costs at most $0.35 and takes at most 2 minutes, with at least 2 of 3 valid. **Opus 5.5 passed:** $0.036, 14 s, 3 of 3.
+
 ## Consequences
 
 - Positive: a person gets a build of their own picture, checked for collisions, support and connection, with a picture, an `.ldr`, its parts and steps, and what they own or are missing against a scan.
@@ -238,6 +333,10 @@ It ran on 2026-11-25 on the project's server (AMD EPYC, 16 cores, no GPU, Ubuntu
 - Negative: queued and running jobs live in memory, as scan jobs do, so a restart loses them, and the service stays one process.
 - Negative: BrickLayer 0.1.0 is research code, and rendering relies on turning off a pygfx feature, as in ADR-0010. The versions are pinned.
 - Negative: five drawn pictures is a small spike. Real photos, with backgrounds and several subjects, are unmeasured.
+- Positive: with idea previews, every idea Claude writes gets a picture of a checked build, and its steps and parts are that build's.
+- Negative: at the default `all`, each request for ideas costs about $0.12 more in previews, on top of about $0.02 for the ideas themselves, until the daily budget or the account's limit stops them.
+- Negative: an idea's steps and parts can change after it's first shown, when its preview is built. The web app shows the new ones with the picture.
+- Negative: the idea-preview spike was three small ideas from one scan. Bigger ideas, up to 15 pieces, are unmeasured.
 
 ## Pros and Cons of the Options
 

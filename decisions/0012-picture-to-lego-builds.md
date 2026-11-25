@@ -227,7 +227,7 @@ It ran on 2026-11-25 on the project's server (AMD EPYC, 16 cores, no GPU, Ubuntu
 
 ### Idea previews
 
-A scope addition from the maintainer: every build idea should show a picture of what it looks like, made with this engine, not only the ideas that are library picks ([ADR-0010](0010-library-of-checked-builds.md)). legoin-api#36 and legoin-web#78 implement it.
+A scope addition from the maintainer: every build idea should show a picture of what it looks like, made with this engine, not only the ideas that are library picks ([ADR-0010](0010-library-of-checked-builds.md)). legoin-api#35 and legoin-web#78 implement it.
 
 **What happens:**
 
@@ -397,4 +397,4 @@ Every preview was valid and used every pair its idea listed. Opus added pieces w
 - [ADR-0011](0011-accounts-with-email-and-password.md): accounts, which own picture builds
 - [BrickWright and BrickLayer](https://github.com/AvaLovelace1/brickwright), and the paper, [arXiv:2610.31651](https://arxiv.org/abs/2610.31651)
 - Anthropic's [pricing](https://platform.claude.com/docs/en/about-claude/pricing), [tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview), [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) and [refusals and fallbacks](https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback)
-- legoin-api#28 and legoin-web#75
+- legoin-api#28 and legoin-web#75; for idea previews, legoin-api#35 and legoin-web#78

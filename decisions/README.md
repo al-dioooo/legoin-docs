@@ -41,4 +41,4 @@ Don't change the content of an `Accepted` ADR. To change a decision, write a new
 | [0007](0007-end-to-end-smoke-tests.md) | End-to-end smoke tests with Playwright, on Chromium, against a production build | Accepted | 2026-11-08 |
 | [0008](0008-backend-stack.md) | Backend in Python with FastAPI, models from a pinned legoin-ml release, SQLite and local photos | Accepted | 2026-11-25 |
 | [0009](0009-anthropic-claude-writes-build-ideas.md) | Anthropic Claude writes build ideas | Accepted | 2026-11-25 |
-| [0010](0010-library-of-checked-builds.md) | A library of checked builds, made and rendered offline with BrickLayer | Proposed | 2026-11-25 |
+| [0010](0010-library-of-checked-builds.md) | A library of checked builds, made and rendered offline with BrickLayer | Accepted | 2026-11-25 |

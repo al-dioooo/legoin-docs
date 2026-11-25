@@ -1,6 +1,6 @@
 # ADR-0010: A Library of Checked Builds, Made and Rendered Offline with BrickLayer
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-25
 - Deciders: Legoin team
 - Issue: #19

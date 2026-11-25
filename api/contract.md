@@ -688,7 +688,7 @@ The PRD's `cek_inventori` check splits what a build needs into parts the person 
 
 For the team. The contract works with any answer; the placeholders below only keep it complete until then.
 
-1. **The LLM provider.** The contract doesn't depend on one. Whatever is chosen needs tool calling for `cek_inventori`, good Indonesian, and an answer within the 10-second budget.
+1. **The LLM provider.** **Answered by [ADR-0009](../decisions/0009-anthropic-claude-writes-build-ideas.md): Anthropic's Claude.** The contract doesn't depend on one. Whatever is chosen needs tool calling for `cek_inventori`, good Indonesian, and an answer within the 10-second budget.
 2. **Accounts and auth.** Is there a log-in? Placeholder: the `Legoin-Device-Id` header, a random UUID the browser makes once and keeps in `localStorage`. It keeps each device's scans apart, but it isn't security: anyone who has the id sees its scans. If accounts come, real auth replaces the header.
 3. **Where photos are stored, for how long, and what else they're used for.** The contract only needs `photo.src` to load in a plain `<img>` while the scan exists, and deleting a scan to delete its photo. If photos are private, `src` has to be an unguessable or signed URL, since an `<img>` sends no device header.
 4. **Whether history stays per device.** Today it's per browser: the mock keeps scans in `localStorage`, and the results screen says a missing scan "may have been deleted from this browser". The placeholder in 2 keeps that. History across devices needs accounts.

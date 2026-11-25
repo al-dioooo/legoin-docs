@@ -1140,9 +1140,46 @@ These codes are new, and only picture builds use them:
 
 The backend's own limits (the daily budget, the jobs per account a day, the cost and time a job may take, and the queue's length) are its configuration, which [ADR-0012](../decisions/0012-picture-to-lego-builds.md) sets out. The client learns the ones it needs from `GET /picture-quota` and `Retry-After`.
 
+### Idea previews
+
+Ideas the agent writes itself get a picture too, built after the ideas are answered by the same engine as picture builds ([ADR-0012](../decisions/0012-picture-to-lego-builds.md), "Idea previews"). `POST /scans/{scanId}/ideas` answers as it does today, within its deadline; a preview never slows it down or fails it. Library ideas keep the `buildId` and `preview` they've always had.
+
+One optional field joins `Idea` ([Shapes](#3-shapes)):
+
+```ts
+type Idea = {
+  // …every field in section 3, and:
+  previewStatus?: "pending" | "on_open" | "ready" | "unavailable";
+};
+```
+
+| `previewStatus` | What it means | What the client does |
+| --- | --- | --- |
+| left out | The backend makes no preview for this idea: it's a library idea with its own `preview`, or previews are off. | As today. |
+| `pending` | The preview is waiting for its turn or being built. | Shows that a picture is coming, and reads the idea again every 3 seconds, with `GET /scans/{scanId}` on the ideas list or `GET /scans/{scanId}/ideas/{ideaId}` on the idea's page, until the status changes. |
+| `on_open` | The backend builds the preview when this idea's page is opened. | Nothing on the list. `GET /scans/{scanId}/ideas/{ideaId}` starts the build and already answers `pending`. |
+| `ready` | The preview is built. | Shows `preview`. |
+| `unavailable` | No preview will come: a limit or the budget was reached, or the build couldn't be made. | Shows the idea as text, as today. |
+
+When a preview is `ready`, **the build is the idea:**
+
+- `buildId` and `preview` are there. A built preview's `buildId` starts with `gen_`, and its `preview` URLs are unguessable files of this account's, like a picture build's.
+- `steps` and `summary` are rewritten to match the build, in the set's language; the title stays.
+- `used` and `missing` come from [`cek_inventori`](#every-idea-passes-cek_inventori) of the build's own parts against the scan's inventory at that moment. The build may use more or fewer of each of the idea's parts and colors than it listed, but no others.
+
+So the picture, the parts and the steps never disagree. A client that kept the idea from before reads it again.
+
+Previews belong to the set they were made for:
+
+- **Asking for ideas again**, or a correction that drops the scan's `ideas`, cancels the old set's previews that haven't finished. Their builds are deleted with the old set.
+- **Deleting the scan** deletes its previews.
+- **Previews count toward the backend's daily budget** for picture builds. Each account also has a daily number of previews; past it, or past the budget, a new idea's `previewStatus` is `unavailable` straight away.
+
 **Decisions in this section,** for review:
 
 1. **A picture build is a job,** like a scan, not one long request: it takes about a minute, the person sees its stages, and a dropped connection doesn't lose it.
 2. **A picture build isn't an `Idea`.** It has no theme or difficulty, it belongs to the account rather than to a scan, and its parts aren't checked until the person picks a scan, so it gets shapes of its own.
 3. **`check` is worked out on each read,** against the scan as it is then, so a correction to the scan shows straight away and nothing has to be kept in step.
 4. **The quota has its own route,** so the web app can say what's left before the person picks a picture, rather than after an upload is refused.
+5. **A preview is a status on the idea, read by polling the routes the client already uses,** not a job of its own: the ideas list already reads `GET /scans/{scanId}`, and the idea's page `GET /scans/{scanId}/ideas/{ideaId}`.
+6. **A built preview replaces the idea's steps, summary, `used` and `missing`,** so the words and the picture always describe the same build.

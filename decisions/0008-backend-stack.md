@@ -181,11 +181,12 @@ Nothing is deployed. The host stays a team decision, and this ADR only says what
 
 - Positive: the backend runs the released models with the exact libraries and settings they were made with. The SHA-256 check means it can't load a file that differs from the release.
 - Positive: CI and unit tests run in seconds with no torch, weights or network, and the stub gives the web team a backend to build against before the models run anywhere.
+- Positive: a CPU is enough. On the project's 8-core server, legoin-api scans a real 31-piece photo in about 0.4 s from the end of the upload, under a tenth of the contract's 5-second budget, so a smaller CPU still has room.
 - Positive: one process and one folder. There's no queue, database server, bucket or key to set up, and the whole service runs from a container or from `uv run`.
 - Positive: an LLM provider can be added later behind `IdeaGenerator` without changing the contract or the routes. `cek_inventori` and the catalogue check already guard whatever it writes.
 - Negative: jobs live in memory, so the service must run as **one process**, with no extra uvicorn workers and no second instance. A restart forgets running jobs; the client then gives up after 3 failed polls and reports `network`.
 - Negative: SQLite and the local disk tie the data to one machine. Free hosts with ephemeral disks lose every scan and photo on a redeploy unless they mount a persistent volume. Moving to PostgreSQL and object storage later means a migration.
-- Negative: torch makes the container image large and needs far more memory than the web app. Small free tiers may not fit.
+- Negative: torch makes the container image large: about 2.0 GB unpacked and 0.6 GB to download, measured on legoin-api's image. The container used about 425 MB of memory idle and 550 MB after scanning, so a free tier with 512 MB won't fit.
 - Negative: model settings are copied by hand from release notes into code, and a new tag means a code change (already true under ADR-0005).
 - Negative: the template ideas are a stand-in. Only six exist per theme, so after six "Try other ideas" in one theme the backend has to offer excluded ones again, where an LLM would write new ones.
 - Negative: `too_dark` and `too_blurry` come from simple checks with uncalibrated thresholds, until labeled photos exist.

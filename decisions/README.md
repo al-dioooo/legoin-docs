@@ -42,4 +42,4 @@ Don't change the content of an `Accepted` ADR. To change a decision, write a new
 | [0008](0008-backend-stack.md) | Backend in Python with FastAPI, models from a pinned legoin-ml release, SQLite and local photos | Accepted, partly superseded by 0011 | 2026-11-25 |
 | [0009](0009-anthropic-claude-writes-build-ideas.md) | Anthropic Claude writes build ideas | Accepted | 2026-11-25 |
 | [0010](0010-library-of-checked-builds.md) | A library of checked builds, made and rendered offline with BrickLayer | Accepted | 2026-11-25 |
-| [0011](0011-accounts-with-email-and-password.md) | Accounts with email and password, required before scanning | Proposed | 2026-11-25 |
+| [0011](0011-accounts-with-email-and-password.md) | Accounts with email and password, required before scanning | Accepted | 2026-11-25 |

@@ -1,6 +1,6 @@
 # ADR-0011: Accounts with Email and Password, Required Before Scanning
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-25
 - Deciders: Legoin team
 - Issue: #23

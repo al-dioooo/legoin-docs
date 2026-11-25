@@ -73,7 +73,11 @@ It lives in legoin-api, in `builds/`, with one directory per build:
 - **legoin-api serves the files** as static files, at `/v1/builds/{buildId}/preview.webp` and `/v1/builds/{buildId}/model.ldr`. Each URL carries the file's hash (`?v=`) and is cached for a year as `immutable`. There's no device header: they're public catalogue content, not anyone's photos.
 - **An idea gets two optional fields** in the [contract](../api/contract.md): `buildId`, the build it shows, and `preview: { image, model }`, absolute URLs of its picture and `.ldr`. Additive only: everything else stays as it is.
 - **Template ideas** carry both.
-- **Claude** gets a short summary of the library in the cached part of its system prompt: each build's id, title and parts. When the person's pieces fit a build, Claude can answer with its `buildId`. The service then uses that build's text, parts and steps, still runs `cek_inventori` for `used` and `missing`, and adds `preview`. An unknown `buildId` is ignored, and Claude's own builds keep no preview.
+- **Claude** gets a short summary of the library in the cached part of its system prompt: each build's id, theme, titles and parts.
+  - **When the person owns every piece of a build, or all but one,** Claude can answer a slot with its `buildId`, an `enum` of the library's ids in the answer's schema. The service then uses that build's text, parts and steps, still runs `cek_inventori` for `used` and `missing`, and adds `preview`.
+  - **A pick that's wrong** gets ADR-0009's single repair, then a template. Wrong means in another theme, already seen, picked twice, or missing more than one of the person's pieces.
+  - **Claude's own builds** keep no preview.
+- **One round of `cek_inventori` calls.** Claude checks every build in one turn, then answers: two API calls. ADR-0009 allowed three rounds, but with the library in the prompt, Claude sometimes took a second round, at about 4 s more (see the measurements below). The service runs `cek_inventori` on every final build anyway.
 - **legoin-web** shows the picture on idea cards and the idea page, with a link to download the `.ldr`. Its mock has the same 18 pictures and the same templates.
 
 ### Credits
@@ -99,6 +103,25 @@ It ran on 2026-11-25 on the project's server (AMD EPYC, 16 cores, no GPU, Ubuntu
   - Validating, exporting and rendering all 18 builds took 29 s, about 1.6 s a build, with 560 MB of memory at most.
   - The previews are 12 to 25 KB each (320 KB for all 18), and the `.ldr` files 370 to 640 bytes: plain LDraw part lines under a short header.
 - **Renders aren't byte-for-byte repeatable.** On llvmpipe, two runs differ by a few pixels. The script keeps a build's files while its source still matches the manifest, so previews don't churn.
+
+### Measured with Claude
+
+- **Method:** the same as ADR-0009's, on 2026-11-25.
+  - Requests went through `POST /v1/scans/{id}/ideas` in a container of legoin-api's branch for issue #19, before the one-round cap and the "all but one" rule.
+  - A counting wrapper on the SDK client refused any call past 8.
+  - The scan: the 31-piece test photo, scanned by the v0.2.0 models into the same 25 lines.
+  - Sonnet 5.5 at `low`.
+- **The cached prefix** grew from 2,910 to 4,577 tokens: about $0.0005 a call to read, $0.011 once to write.
+- **Three requests, 8 API calls, $0.083:**
+
+| Request | Latency | API calls (tool rounds) | Cost | Library picks |
+| --- | --- | --- | --- | --- |
+| `vehicles`, `en` | 13.3 s | 2 (1), the first call writing the cache | $0.029 | none |
+| `animals`, `id` | 12.9 s | 3 (2) | $0.023 | the snail, with 1 of its 3 pieces owned |
+| `surprise`, `en` | 15.3 s | 3 (2) | $0.031 | none |
+
+- **Per call:** tool rounds took 3.8 to 4.7 s warm and answers 4.3 to 5.4 s, as in ADR-0009. The time over 10 s came from the second tool round and the first call's cache write.
+- **Not yet measured:** the one-round cap and the "all but one" rule, which came after. From the per-call times, a warm request with one round would take about 8 to 9.5 s. legoin-api's PR for #19 asks for a few more real requests to confirm it.
 
 ## Consequences
 

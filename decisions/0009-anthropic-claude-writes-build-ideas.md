@@ -1,6 +1,6 @@
 # ADR-0009: Anthropic Claude Writes Build Ideas
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-25
 - Deciders: Legoin team
 - Issue: #17

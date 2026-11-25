@@ -1,8 +1,8 @@
 # Legoin API Contract
 
 - Status: Draft, under review in #7
-- Version: 0.1
-- Date: 2026-11-09
+- Version: 0.2
+- Date: 2026-11-25
 - Issue: #7
 - Source of the shapes: `src/lib/domain.ts` and `src/lib/api` in [legoin-web](https://github.com/al-dioooo/legoin-web), on `main` at `a05024d`
 
@@ -10,12 +10,16 @@ This is the contract between legoin-web and the Python backend. The backend runs
 
 In legoin-web, screens read and write only through the data layer, `src/lib/api`. Today a browser-side mock serves it from `localStorage`. Setting `NEXT_PUBLIC_API_URL` will switch it to an HTTP client for this API. Every function in the data layer has an endpoint here, and every shape matches `domain.ts`, so the switch changes nothing outside `src/lib/api`.
 
-Parts the team hasn't decided yet are marked **Open question** and collected in [Open questions](#9-open-questions). Technical choices this draft makes on its own are collected in [Decisions in this draft](#10-decisions-in-this-draft), so a reviewer can push back on them.
+Parts the team hasn't decided yet are marked **Open question** and collected in [Open questions](#10-open-questions). Technical choices this draft makes on its own are collected in [Decisions in this draft](#11-decisions-in-this-draft), so a reviewer can push back on them.
 
 ## 1. Overview
 
 | Data layer (`src/lib/api`) | Endpoint | Answer |
 | --- | --- | --- |
+| `register(email, password)` | [`POST /auth/register`](#post-authregister) | A `Session`, which the data layer keeps. It resolves with the `Account`. |
+| `logIn(email, password)` | [`POST /auth/login`](#post-authlogin) | The same |
+| `logOut()` | [`POST /auth/logout`](#post-authlogout) | 204. The data layer forgets the session either way. |
+| `getAccount()` | [`GET /auth/me`](#get-authme) | `Account`, or 401, which the client turns into `null` |
 | `createScan(photo, { onStage, signal })` | [`POST /scan-jobs`](#post-scan-jobs), then [`GET /scan-jobs/{jobId}`](#get-scan-jobsjobid) until it ends. [`DELETE /scan-jobs/{jobId}`](#delete-scan-jobsjobid) cancels. | A `ScanJob` that ends with a `Scan` |
 | `getScan(id)` | [`GET /scans/{scanId}`](#get-scansscanid) | `Scan`, or 404, which the client turns into `null` |
 | `listScans()` | [`GET /scans`](#get-scans) | `{ scans: Scan[] }`, newest first |
@@ -24,7 +28,7 @@ Parts the team hasn't decided yet are marked **Open question** and collected in 
 | `getIdeas(scanId, theme, locale, { exclude })` | [`POST /scans/{scanId}/ideas`](#post-scansscanidideas) | An `IdeaSet` of 3 ideas |
 | `getIdea(scanId, ideaId)` | [`GET /scans/{scanId}/ideas/{ideaId}`](#get-scansscanidideasideaid) | `StoredIdea`, or 404, which the client turns into `null` |
 
-A visit goes: upload a photo and follow the scan's stages, check and correct the pieces, ask for ideas in a theme, open one idea, and come back to the scan later from history.
+A visit goes: log in or make an account, upload a photo and follow the scan's stages, check and correct the pieces, ask for ideas in a theme, open one idea, and come back to the scan later from history, on any device.
 
 ## 2. Conventions
 
@@ -34,14 +38,14 @@ A visit goes: upload a photo and follow the scan's stages, check and correct the
 - **Unknown fields.** A client ignores fields it doesn't know, so the backend can add an optional field within a version.
 - **Times** are ISO 8601 in UTC, ending in `Z`, e.g. `2026-11-09T03:12:45.120Z`. Sorting them as strings sorts them by time.
 - **Ids** are opaque strings the backend makes: URL-safe (`A–Z a–z 0–9 _ -`), at most 64 characters. The client never parses or makes one; a `restore` change sends a detection back with the id the backend gave it.
-- **Whose scans.** **Open question.** Every request carries a `Legoin-Device-Id` header, and the backend only shows a device its own scans. This is a placeholder until the team decides on accounts and history; see [Open questions](#9-open-questions) 2 and 4.
-- **CORS.** The data layer runs in the browser, in Client Components, so the browser calls the API directly. The API allows the web app's origins, the methods `GET`, `POST`, `PATCH` and `DELETE`, and the request headers `Content-Type` and `Legoin-Device-Id`.
-- **Errors** share one body. See [Errors](#6-errors).
+- **Whose scans.** Each scan belongs to the account that made it, and an account only ever sees its own. Every request carries the account's session as `Authorization: Bearer <token>`, except the requests that make a session and the URLs an `<img>` loads. See [Accounts](#4-accounts).
+- **CORS.** The data layer runs in the browser, in Client Components, so the browser calls the API directly. The API allows the web app's origins, the methods `GET`, `POST`, `PATCH` and `DELETE`, and the request headers `Content-Type` and `Authorization`. The API sets no cookies, so it never sends `Access-Control-Allow-Credentials`.
+- **Errors** share one body. See [Errors](#7-errors).
 - **Examples** use `https://api.legoin.example/v1` as the base. The ones marked `jsonc` are shortened with comments; real answers are plain, complete JSON.
 
 ## 3. Shapes
 
-Written as TypeScript because `domain.ts` is; the backend can mirror them with Pydantic models. Everything here is in `domain.ts` or `bricks.ts` with the same names and fields, except `ScanJob` and `ApiErrorBody`, which only exist on the wire. `Idea`'s `buildId` and `preview`, and `Preview`, were added after `a05024d` ([ADR-0010](../decisions/0010-library-of-checked-builds.md)).
+Written as TypeScript because `domain.ts` is; the backend can mirror them with Pydantic models. Everything here is in `domain.ts` or `bricks.ts` with the same names and fields, except `ScanJob`, `Session` and `ApiErrorBody`, which only exist on the wire. `Account` and `Session` came with accounts ([ADR-0011](../decisions/0011-accounts-with-email-and-password.md)). `Idea`'s `buildId` and `preview`, and `Preview`, were added after `a05024d` ([ADR-0010](../decisions/0010-library-of-checked-builds.md)).
 
 ```ts
 type Scan = {
@@ -96,6 +100,13 @@ type IdeaSet = { theme: Theme; locale: Locale; items: Idea[] };
 
 type StoredIdea = { idea: Idea; set: IdeaSet };
 
+/** Who's logged in. */
+type Account = {
+  id: string;
+  email: string; // trimmed and lowercased by the backend
+  createdAt: string; // ISO 8601, UTC: when the account was made
+};
+
 type ScanStage = "detecting" | "classifying" | "coloring";
 type Theme = "vehicles" | "animals" | "buildings" | "surprise";
 type IdeaTheme = "vehicles" | "animals" | "buildings";
@@ -109,16 +120,22 @@ type ScanJob =
   | { id: string; status: "done"; scan: Scan }
   | { id: string; status: "failed"; error: ApiErrorBody["error"] };
 
+type Session = {
+  token: string; // opaque; sent back as `Authorization: Bearer <token>`
+  expiresAt: string; // ISO 8601, UTC
+  account: Account;
+};
+
 type ApiErrorBody = {
   error: { code: ErrorCode; message: string; field?: string };
 };
 ```
 
-`ErrorCode` is listed in [Errors](#6-errors), and `BrickPartId` and `BrickColorId` in [the catalogue](#the-catalogue).
+`ErrorCode` is listed in [Errors](#7-errors), and `BrickPartId` and `BrickColorId` in [the catalogue](#the-catalogue).
 
 ### Photo
 
-- `src` is an absolute URL that a plain `<img>` can load, with no extra headers, for as long as the scan exists. Where photos are stored, and for how long, is an **open question** ([3](#9-open-questions)).
+- `src` is an absolute URL that a plain `<img>` can load, with no extra headers, for as long as the scan exists. It needs no `Authorization` header either: the API gives it only to the scan's account, and its name can't be guessed ([ADR-0011](../decisions/0011-accounts-with-email-and-password.md)). Where photos are stored, and for how long, is an **open question** ([3](#10-open-questions)).
 - `width` and `height` are that image's size in pixels, upright. The backend applies the photo's EXIF orientation before it detects or stores anything, so boxes and pixels agree.
 
 ### Detection
@@ -151,7 +168,7 @@ Some ideas are a checked build from the backend's library: built from real parts
 - **`buildId`** is the build's id in the library, e.g. `race-car`. Like other ids, the client never parses it. The idea's title, summary, steps and parts are that build's, in the idea's language. `used` and `missing` still come from `cek_inventori`.
 - **`preview.image`** is an absolute URL of a picture of the finished build: an isometric view, a square WebP of 640 × 640 pixels on a transparent background. It loads in a plain `<img>`, with no header.
 - **`preview.model`** is an absolute URL of the build as an LDraw file (`.ldr`), served as a download. It names parts from the LDraw.org Parts Library and doesn't include them.
-- **Both URLs are public and versioned.** They carry no device id, and a URL never changes what it serves, so clients and proxies may cache it for good. Where the backend serves them is its choice.
+- **Both URLs are public and versioned.** They carry nothing about the account, and a URL never changes what it serves, so clients and proxies may cache it for good. Where the backend serves them is its choice.
 - **`buildId` and `preview` come together:** an idea has both or neither.
 - **The client** writes the picture's alt text itself, from the title, in the page's language. Wherever it shows pictures, it credits the LDraw.org Parts Library, BrickLayer and BrickWright, and the LEGO trademark line, as ADR-0010 lists.
 
@@ -190,7 +207,115 @@ The catalogue is the PRD's MVP: 10 colors and 13 parts. The backend only ever se
 | `tile-1x2` | Tile 1×2 | 3069b |
 | `round-1x1` | Round 1×1 | 3062b |
 
-## 4. Scans
+## 4. Accounts
+
+Scanning needs an account ([ADR-0011](../decisions/0011-accounts-with-email-and-password.md)). A person makes one with an email and a password, or logs in to one, and the API answers with a `Session`. The data layer keeps it and sends its token on every other request:
+
+```http
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
+```
+
+Each account sees only its own scans, from any device it logs in on.
+
+| Needs a session | Public |
+| --- | --- |
+| Every route in [Scans](#5-scans) and [Ideas](#6-ideas), and `GET /auth/me` | `POST /auth/register`, `POST /auth/login` and `POST /auth/logout`, and the URLs an `<img>` loads: `photo.src` and `preview` |
+
+### Sessions
+
+- **The token** is opaque: the client never parses it and sends it back as it came. The API's tokens are `lgn_` and 43 URL-safe characters.
+- **It lasts until `expiresAt`,** 30 days after logging in. There's no refresh; after that, the person logs in again.
+- **Each log-in is a session of its own,** so an account can be logged in on several devices at once. Logging out ends only the session it's sent with.
+- **Without a valid session,** a route that needs one answers `401 unauthorized`, with `WWW-Authenticate: Bearer`, before any other check. That's no `Authorization` header, a header that isn't `Bearer <token>`, or a token that's unknown, expired or logged out.
+- **Another account's scan, job or idea** answers `404 not_found`, the same as one that doesn't exist. The API never answers `403`, which would tell the caller that the id exists.
+- **The client** keeps the session in `localStorage` and sends the token only to `NEXT_PUBLIC_API_URL`. On `401 unauthorized`, it forgets the session and sends the person to log in, then back to the page they were on.
+
+### Email and password
+
+| Field | Rules |
+| --- | --- |
+| `email` | At most 254 characters, `name@domain` with a dot in the domain. The backend trims and lowercases it and keeps it that way, so `Ana@Example.com ` and `ana@example.com` are one account. Nothing is sent to it, so it's never confirmed. |
+| `password` | 8 to 128 characters, any characters, with no other rules. The backend keeps only an Argon2id hash and never logs it. |
+
+- **A field that breaks a rule** answers `400 invalid_request`, with `email`, `password` or `deviceId` in `field`.
+- **Logging in** checks only that the email and password are there and not too long, so a password made under older rules still works.
+- **Too many failures.** After 10 failed log-ins for one email within 15 minutes, `POST /auth/login` for that email answers `429 rate_limited`, with `Retry-After` in seconds, until the oldest of those failures is 15 minutes old. A log-in that works clears the count.
+
+### `POST /auth/register`
+
+`register(email, password)`: makes an account and logs it in. It answers `201` with a `Session`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `email` | `string` | See [Email and password](#email-and-password). |
+| `password` | `string` | The same. |
+| `deviceId` | `string`, optional | The `Legoin-Device-Id` this browser used before accounts, to move its scans. See [Scans from before accounts](#scans-from-before-accounts). |
+
+```http
+POST /v1/auth/register HTTP/1.1
+Host: api.legoin.example
+Content-Type: application/json
+
+{ "email": "ana@example.com", "password": "baseplate-2x4", "deviceId": "3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10" }
+```
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+
+{
+  "token": "lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg",
+  "expiresAt": "2026-12-25T03:10:00.000Z",
+  "account": { "id": "acc_7r2k9d", "email": "ana@example.com", "createdAt": "2026-11-25T03:10:00.000Z" }
+}
+```
+
+Errors: `400 invalid_request`, and `409 email_taken` when the email already has an account.
+
+### `POST /auth/login`
+
+`logIn(email, password)`: logs in to an account, as a new session, and answers `200` with a `Session` in the same shape. The body has the same fields as `POST /auth/register`.
+
+Errors: `400 invalid_request`; `401 invalid_credentials` when no account has this email or the password is wrong, without saying which; `429 rate_limited`.
+
+### `POST /auth/logout`
+
+`logOut()`: ends the session whose token it carries, and answers `204` with no body. A missing, unknown or expired token answers `204` too, so logging out never fails. The data layer forgets the session either way.
+
+```http
+POST /v1/auth/logout HTTP/1.1
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
+```
+
+```http
+HTTP/1.1 204 No Content
+```
+
+### `GET /auth/me`
+
+`getAccount()`: the session's `Account`. Without a valid session it's `401 unauthorized`, and the data layer returns `null`.
+
+```http
+GET /v1/auth/me HTTP/1.1
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
+```
+
+```json
+{ "id": "acc_7r2k9d", "email": "ana@example.com", "createdAt": "2026-11-25T03:10:00.000Z" }
+```
+
+### Scans from before accounts
+
+Before accounts, the API kept scans by the `Legoin-Device-Id` header, a random id the browser made once. Those scans move to an account, once:
+
+- `POST /auth/register` and `POST /auth/login` take that id as `deviceId`: 1 to 128 of `A–Z a–z 0–9 . _ -`, as the header was.
+- When the request succeeds, every scan saved under that id that no account has yet moves to this account, with its photo and ideas. The answer is the same `Session`, and the scans show up in `GET /scans`.
+- A scan that has moved never moves again, and a request that fails moves nothing. An id with no scans moves nothing and isn't an error.
+- The web app sends the id it kept in `localStorage` (`legoin.deviceId.v1`), if it has one, then deletes it.
+
+As before, the id is all it takes: whoever has it can move its scans, as they could read them before. `deviceId` goes once the deployed data has no scans left to move.
+
+## 5. Scans
 
 ### Scanning a photo
 
@@ -216,7 +341,7 @@ The web app sends the JPEG copy it shows on screen, with its longest side at mos
 ```http
 POST /v1/scan-jobs HTTP/1.1
 Host: api.legoin.example
-Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
 Content-Type: multipart/form-data; boundary=legoin
 
 --legoin
@@ -242,7 +367,7 @@ The job as it is now. A running job reports its stage:
 
 ```http
 GET /v1/scan-jobs/job_8c1f2e HTTP/1.1
-Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
 ```
 
 ```json
@@ -312,7 +437,7 @@ Cancels the job and answers `204` with no body. The backend stops at the next st
 
 ```http
 DELETE /v1/scan-jobs/job_8c1f2e HTTP/1.1
-Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
 ```
 
 ```http
@@ -321,11 +446,11 @@ HTTP/1.1 204 No Content
 
 ### `GET /scans/{scanId}`
 
-`getScan(id)`: one scan, with its detections and, once ideas were asked for, its `lastTheme` and latest `ideas`. The answer is the `scan` from the finished job above, as it is now. An unknown scan, or one from another device, answers `404 not_found`, and the client returns `null`.
+`getScan(id)`: one scan, with its detections and, once ideas were asked for, its `lastTheme` and latest `ideas`. The answer is the `scan` from the finished job above, as it is now. An unknown scan, or one from another account, answers `404 not_found`, and the client returns `null`.
 
 ```http
 GET /v1/scans/scn_4kd2p9 HTTP/1.1
-Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
 ```
 
 ```http
@@ -337,11 +462,11 @@ Content-Type: application/json
 
 ### `GET /scans`
 
-`listScans()`: this device's scans, newest first by `createdAt`, as full `Scan` objects. They're wrapped in an object so paging can be added later without a new version; this version has no paging. No scans answers `{ "scans": [] }`.
+`listScans()`: this account's scans, newest first by `createdAt`, as full `Scan` objects. They're wrapped in an object so paging can be added later without a new version; this version has no paging. No scans answers `{ "scans": [] }`.
 
 ```http
 GET /v1/scans HTTP/1.1
-Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
 ```
 
 ```jsonc
@@ -392,7 +517,7 @@ Say the scan from the job above already had ideas for `vehicles`. This request r
 
 ```http
 PATCH /v1/scans/scn_4kd2p9/detections HTTP/1.1
-Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
 Content-Type: application/json
 
 {
@@ -452,18 +577,18 @@ Errors: `400 invalid_request`, `404 not_found`.
 
 ```http
 DELETE /v1/scans/scn_4kd2p9 HTTP/1.1
-Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
 ```
 
 ```http
 HTTP/1.1 204 No Content
 ```
 
-## 5. Ideas
+## 6. Ideas
 
 ### `POST /scans/{scanId}/ideas`
 
-`getIdeas(scanId, theme, locale, { exclude })`: asks the agent for three new ideas and answers `200` with the `IdeaSet`. The data layer resolves with its `items`. Which LLM provider runs the agent is an **open question** ([1](#9-open-questions)); nothing here depends on it.
+`getIdeas(scanId, theme, locale, { exclude })`: asks the agent for three new ideas and answers `200` with the `IdeaSet`. The data layer resolves with its `items`. Which LLM provider runs the agent is an **open question** ([1](#10-open-questions)); nothing here depends on it.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -473,7 +598,7 @@ HTTP/1.1 204 No Content
 
 What the backend does:
 
-- **Writes three ideas** in `locale`, each checked against the scan's inventory as it is now (see [Rules](#7-rules)). For `surprise`, it's one idea from each of `vehicles`, `animals` and `buildings`.
+- **Writes three ideas** in `locale`, each checked against the scan's inventory as it is now (see [Rules](#8-rules)). For `surprise`, it's one idea from each of `vehicles`, `animals` and `buildings`.
 - **Adds a picture** to each idea that's a checked build from its library: `buildId` and `preview` (see [Preview](#preview)).
 - **Keeps them.** The set becomes the scan's `ideas`, replacing the one before, and `theme` becomes its `lastTheme`.
 - **Avoids excluded ideas.** The backend remembers every idea it has written for a scan, not only the latest set, so it can tell the agent what was already shown. Ids it doesn't know are ignored.
@@ -487,7 +612,7 @@ This request comes after the correction above, in Indonesian, with three ideas a
 
 ```http
 POST /v1/scans/scn_4kd2p9/ideas HTTP/1.1
-Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
 Content-Type: application/json
 
 { "theme": "vehicles", "locale": "id", "exclude": ["idea_m2x9", "idea_p0d4", "idea_t6w1"] }
@@ -578,7 +703,7 @@ It answers `404 not_found` when the scan is gone or its latest set has no idea w
 
 ```http
 GET /v1/scans/scn_4kd2p9/ideas/idea_r4c8 HTTP/1.1
-Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
+Authorization: Bearer lgn_pY5h2PcG9NnqPsZk4j-mzx5D7dFTpfR8_jUFioj9cOg
 ```
 
 ```jsonc
@@ -598,7 +723,7 @@ Legoin-Device-Id: 3b0e6f1c-5d2a-4f7e-9c41-8a2d7e5b9f10
 }
 ```
 
-## 6. Errors
+## 7. Errors
 
 Every error answers with one body:
 
@@ -618,8 +743,12 @@ Every error answers with one body:
 
 | Code | Status | When | In the web app |
 | --- | --- | --- | --- |
-| `invalid_request` | 400 | The body, a field or a header fails validation: no photo part, an unknown theme, locale, part or color, a quantity out of range, no `Legoin-Device-Id`. | A bug: the call rejects with a plain `Error`, and the screen shows its generic message. |
-| `not_found` | 404 | No scan, job or idea with this id for this device. | `getScan` and `getIdea` return `null`; the other calls reject. |
+| `invalid_request` | 400 | The body, a field or a header fails validation: no photo part, an unknown theme, locale, part or color, a quantity out of range, an email or a password that breaks [the rules](#email-and-password). | A bug: the call rejects with a plain `Error`, and the screen shows its generic message. |
+| `not_found` | 404 | No scan, job or idea with this id for this account. | `getScan` and `getIdea` return `null`; the other calls reject. |
+| `unauthorized` | 401 | A route that needs a session has none: no `Authorization` header, one that isn't `Bearer <token>`, or a token that's unknown, expired or logged out. Sent with `WWW-Authenticate: Bearer`. | An `UnauthorizedError`: the data layer forgets the session, and the page sends the person to log in. `getAccount` returns `null`. |
+| `invalid_credentials` | 401 | Logging in with an email that has no account, or with the wrong password. | `AuthError("invalid_credentials")`, which the log-in form shows. |
+| `email_taken` | 409 | Registering an email that already has an account. | `AuthError("email_taken")` |
+| `rate_limited` | 429 | Too many failed log-ins for one email. Sent with `Retry-After`. | `AuthError("rate_limited")` |
 | `no_pieces` | 409, or in a failed job | The scan has no pieces to build with (ideas), or the models found none in the photo (scan). | `ApiError("no_pieces")` |
 | `photo_too_large` | 413 | The photo is over 10 MB. | The client checks first and shows its own message (`PhotoProblem` `size`). |
 | `photo_type` | 415 | The photo isn't JPEG, PNG or WebP, or can't be decoded. | The client checks first (`PhotoProblem` `type`). |
@@ -653,9 +782,9 @@ The models decide which photo problem to report. The mock fails photos after the
 | The client, polling a job | 45 s with no ending, or 3 polls in a row with no answer | It sends `DELETE /scan-jobs/{jobId}` and rejects with `network`. |
 | The client, waiting for ideas | 40 s | It aborts the request and rejects with `network`. |
 
-These are the limits for failing, not the target. The target is under 15 seconds; see [Rules](#7-rules).
+These are the limits for failing, not the target. The target is under 15 seconds; see [Rules](#8-rules).
 
-## 7. Rules
+## 8. Rules
 
 ### Ideas come in the requested language, and are never translated
 
@@ -680,13 +809,14 @@ The PRD's `cek_inventori` check splits what a build needs into parts the person 
 - It's measured on the backend: from the end of the upload until the scan job is `done`, plus the time to answer the request for ideas. The time the person spends checking their pieces in between, and the phone's own network time, don't count.
 - Budget: about 5 seconds for the scan and 10 for the ideas. The [deadlines](#timeouts) are where a call fails, not the target.
 
-## 8. What stays out of the contract
+## 9. What stays out of the contract
 
 **Demo options.** `?mock=fail-<reason>` and `?mockDelay=<ms>` are read from the page's URL by legoin-web's `src/lib/api/mock-backend.ts`. They're client-side only: they never reach the API, and the API has no way to fake a failure or a delay. The end-to-end suite keeps using them against the mock ([ADR-0007](../decisions/0007-end-to-end-smoke-tests.md)).
 
 **Only in the mock:**
 
-- the four demo scans every new visitor starts with, and `resetMockData`;
+- its accounts and sessions, kept in `localStorage` with each account's scans;
+- the four demo scans every new account starts with, and `resetMockData`;
 - the made-up detections for a photo it doesn't know (`detectionsForPhoto`);
 - the idea templates and their order: once unseen ideas run out, the mock offers the ones shown longest ago again, while the backend simply avoids `exclude`. The templates' text and parts are the backend's, which match its checked builds;
 - the fake waits: 900 ms per stage, 1200 ms for ideas and 150 ms for reads and saves;
@@ -694,6 +824,7 @@ The PRD's `cek_inventori` check splits what a build needs into parts the person 
 
 **Client-side, with the real API too:**
 
+- keeping the session in `localStorage` (`legoin.session.v1`), and sending people to log in when there's none or the API answers `401 unauthorized`;
 - `inOrder`, which passes each stage on once;
 - the scan handoff (`src/lib/scan-handoff.ts`), which shows a new scan's results in the same frame as the navigation;
 - reading, downscaling and checking photos (`src/lib/photo.ts`); the backend checks the type and size again;
@@ -701,27 +832,28 @@ The PRD's `cek_inventori` check splits what a build needs into parts the person 
 
 **Where the mock and the contract differ:**
 
+- The mock's accounts exist only in the browser that made them.
 - The mock's `photo.src` is a data URL or a path on the web app. The API's is a URL the backend serves.
 - The mock's `preview` URLs are paths on the web app, to its copy of the library's pictures and models. The API's are URLs the backend serves.
 - The mock writes ideas for a scan with no pieces, every part missing. The API answers `409 no_pieces`.
 - For a scan that's gone, the mock's `updateDetections` and `getIdeas` reject with a plain `Error`. The API answers `404 not_found`; the screens treat both as a failure.
 - The mock never times out. The API can answer `timeout`, which `ScanFailure` doesn't have yet.
 
-## 9. Open questions
+## 10. Open questions
 
 For the team. The contract works with any answer; the placeholders below only keep it complete until then.
 
 1. **The LLM provider.** **Answered by [ADR-0009](../decisions/0009-anthropic-claude-writes-build-ideas.md): Anthropic's Claude.** The contract doesn't depend on one. Whatever is chosen needs tool calling for `cek_inventori`, good Indonesian, and an answer within the 10-second budget.
-2. **Accounts and auth.** Is there a log-in? Placeholder: the `Legoin-Device-Id` header, a random UUID the browser makes once and keeps in `localStorage`. It keeps each device's scans apart, but it isn't security: anyone who has the id sees its scans. If accounts come, real auth replaces the header.
-3. **Where photos are stored, for how long, and what else they're used for.** The contract only needs `photo.src` to load in a plain `<img>` while the scan exists, and deleting a scan to delete its photo. If photos are private, `src` has to be an unguessable or signed URL, since an `<img>` sends no device header.
-4. **Whether history stays per device.** Today it's per browser: the mock keeps scans in `localStorage`, and the results screen says a missing scan "may have been deleted from this browser". The placeholder in 2 keeps that. History across devices needs accounts.
+2. **Accounts and auth.** **Answered by [ADR-0011](../decisions/0011-accounts-with-email-and-password.md): accounts with an email and a password, required before scanning.** Is there a log-in? Yes. A session token in `Authorization` replaces the placeholder, the `Legoin-Device-Id` header, which anyone who had the id could use. See [Accounts](#4-accounts).
+3. **Where photos are stored, for how long, and what else they're used for.** The contract only needs `photo.src` to load in a plain `<img>` while the scan exists, and deleting a scan to delete its photo. If photos are private, `src` has to be an unguessable or signed URL, since an `<img>` sends no `Authorization` header. ADR-0011 keeps ADR-0008's unguessable URLs.
+4. **Whether history stays per device.** **Answered by [ADR-0011](../decisions/0011-accounts-with-email-and-password.md): no, history belongs to the account,** on every device it logs in on. Scans made per device before accounts move to the first account that logs in from that device ([Scans from before accounts](#scans-from-before-accounts)).
 
 For the backend and ML owners:
 
 5. **The photo size the models need.** The web app uploads its 1200 px copy. If part classification needs more pixels, the web app can send a larger one within 10 MB.
 6. **Pieces outside the catalogue.** When the detector finds a piece the classifier can't place among the 13 parts and 10 colors, does the backend drop it, or send its nearest guess with a low confidence so the person is asked to check it?
 
-## 10. Decisions in this draft
+## 11. Decisions in this draft
 
 Technical choices this draft makes so the contract is complete. Each can be changed in review.
 
@@ -734,14 +866,17 @@ Technical choices this draft makes so the contract is complete. Each can be chan
 7. **Errors share one body with a `code`.** `network` stays the client's own reason, and `timeout`, `unavailable` and `internal` are new codes.
 8. **Deletes always succeed:** `DELETE` answers `204` for a scan or job that's already gone, as the mock does.
 9. **Corrections are all or nothing, and unknown detection ids are ignored,** as in the mock, so a retry or an undo is safe.
-10. **`GET /scans` is wrapped (`{ "scans": [] }`) and has no paging,** since one device's history is small, and the wrapper lets paging come later without a new version.
+10. **`GET /scans` is wrapped (`{ "scans": [] }`) and has no paging,** since one account's history is small, and the wrapper lets paging come later without a new version.
 11. **Ideas for a scan with no pieces answer `409 no_pieces`** instead of ideas with every part missing.
 12. **The backend runs `cek_inventori` itself on the final parts list,** so the guarantee doesn't depend on the model calling the tool correctly.
 13. **Times:** the 15-second target applies to photos of up to 32 pieces, with a budget of about 5 seconds for the scan and 10 for ideas; jobs and requests for ideas fail at 30 seconds; the client gives up at 45 seconds for a scan and 40 for ideas, and polls every 500 ms.
 14. **Limits:** an `add` change adds 1 to 20 pieces, like the web app's add-piece form (`MAX_ADD_QUANTITY`), and `exclude` holds at most 50 ids.
 15. **Pictures are two optional fields on `Idea`, `buildId` and `preview`,** sent only for checked builds from the backend's library ([ADR-0010](../decisions/0010-library-of-checked-builds.md)). Clients ignore fields they don't know, so this needs no new version. The URLs are absolute, like `photo.src`, and versioned, so they can be cached for good.
+16. **Sessions are opaque tokens in `Authorization: Bearer`, which the client keeps in `localStorage`,** not cookies. The web app and the API are on different sites, where browsers block or limit cookies, and a token in a header needs no defence against cross-site requests. Photos and previews stay URLs that need no header ([ADR-0011](../decisions/0011-accounts-with-email-and-password.md)).
+17. **Another account's scan, job or idea answers `404`, never `403`,** so an id tells nothing about other accounts.
+18. **`POST /auth/logout` always answers `204`,** like the deletes in decision 8, so logging out never fails.
 
-## 11. Changes from issue #7
+## 12. Changes from issue #7
 
 The mock has grown since the issue was written, and the contract follows the code:
 

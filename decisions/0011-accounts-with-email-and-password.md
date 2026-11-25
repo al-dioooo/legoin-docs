@@ -168,7 +168,7 @@ This replaces ADR-0008's provisional answer to question 4 and its device-keyed s
 - Negative: the token is in `localStorage`, where any script running on the page can read it. React escapes what it renders and the app loads no third-party scripts; a Content Security Policy would harden it further.
 - Negative: the failed log-in limit is per email and in memory. Someone can lock an email out for 15 minutes by guessing wrong ten times, and a restart resets every count.
 - Negative: every demo needs an account. Make one before presenting.
-- Negative: the change breaks the old web app. legoin-api and legoin-web have to be deployed together; an old web build gets `401` everywhere.
+- Negative: the change breaks the old web app. legoin-api and legoin-web have to be deployed together; an old web build gets `401` everywhere. The base URL stays `/v1`, since the contract is still a draft and legoin-web is its only client.
 - Negative: passwords and tokens cross the network, so both hosts must serve HTTPS. Vercel does, and the API's host must too.
 
 ## Pros and Cons of the Options
